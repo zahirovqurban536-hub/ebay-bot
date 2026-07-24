@@ -1,11 +1,11 @@
 import os
-import asyncio
-from flask import Flask, request
+import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from google import genai
 
-app = Flask(__name__)
+# Loqları göstərmək üçün
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # Environment dəyişənləri
 TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -14,11 +14,12 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Gemini AI Klienti
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Telegram Bot tətbiqini yaradırıq
-telegram_app = Application.builder().token(TOKEN).build()
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Salam! Mən sizin eBay Dropshipping köməkçinizəm. 🚀\n\nMəhsul üçün SEO başlıq yaratmaq üçün belə yazın:\n/title bluetooth earbuds")
+    await update.message.reply_text(
+        "Salam! Mən sizin eBay Dropshipping köməkçinizəm. 🚀\n\n"
+        "Məhsul üçün SEO başlıq yaratmaq üçün belə yazın:\n"
+        "/title bluetooth earbuds"
+    )
 
 async def generate_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -49,22 +50,17 @@ async def generate_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Xəta baş verdi: {str(e)}")
 
-# Handleri əlavə edirik
-telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(CommandHandler("title", generate_title))
+def main():
+    # Telegram Bot tətbiqini qururuq
+    app = Application.builder().token(TOKEN).build()
 
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    if request.method == "POST":
-        asyncio.run(telegram_app.initialize())
-        update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-        asyncio.run(telegram_app.process_update(update))
-        return "ok", 200
-    return "bad request", 400
+    # Əmrləri əlavə edirik
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("title", generate_title))
 
-@app.route("/")
-def index():
-    return "Bot aktivdir!", 200
+    print("Bot işə düşdü...")
+    # Polling rejimi (Ən rahat və rəvan üsul)
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    main()
