@@ -15,9 +15,8 @@ def home():
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
-# --- TELEGRAM BOT BÖLMƏSİ ---
-TOKEN = "8023272977:AAHC17AZJP96DW806EZ48JvlrS3CbwIykR8"
+    
+    TOKEN = "8923272977:AAHC17AZuP96DW8O0EZ40JvlrS3CbwIykR8"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
