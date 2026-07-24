@@ -1,3 +1,16 @@
+import threading
+import os
+from flask import Flask
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is alive!", 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 import os
 import logging
 from telegram import Update
@@ -80,6 +93,7 @@ def main():
     app.add_handler(CommandHandler("profit", profit_calculator))
 
     print("Bot işə düşdü...")
+    threading.Thread(target=run_flask, daemon=True).start()
     app.run_polling()
 
 if __name__ == "__main__":
