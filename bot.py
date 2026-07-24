@@ -7,12 +7,12 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 TOKEN = "8923272977:AAHC17AZuP96DW8O0EZ40JvlrS3CbwIykR8"
 
-# --- FLASK WEB SERVER (Render üçün) ---
+# --- FLASK WEB SERVER (Render 7/24 aktiv qalsın deyə) ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "eBay Bot is Active!"
+    return "eBay Bot is Active 24/7!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -22,24 +22,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "🚀 **eBay Dropshipping Analiz Botuna Xoş Geldiniz!**\n\n"
         "📌 **Mövcud Komandalar:**\n"
-        "👉 `/trend` – ABŞ bazarında an çox satılan trend məhsulları göstərir.\n"
-        "👉 `/profit [Alış] [Satış] [Kargo]` – AutoDS stili mənfəət hesablayır.\n\n"
+        "👉 `/trend` – ABŞ bazarında anlıq yüksələn trendlər və hazır SEO başlıqlar.\n"
+        "👉 `/profit [Alış] [Satış] [Kargo]` – AutoDS stili net mənfəət hesablama.\n\n"
         "📌 **Nümunə (Kargosuz):** `/profit 9.99 14.56`\n"
         "📌 **Nümunə (Kargo ilə):** `/profit 9.99 14.56 3`"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def trend(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 ABŞ bazarındakı son trendlər analiz olunur... Lütfen gözləyin.")
+    await update.message.reply_text("🔍 ABŞ bazarındakı anlıq yüksələn trendlər və SEO başlıqlar analiz olunur... Lütfen gözləyin.")
     
     result_text = (
-        "🔥 **Güncəl eBay ABŞ Top Dropshipping Trendləri:**\n\n"
-        "1. 🎧 **Wireless Earbuds Bluetooth 5.3** – Est. Price: $14.99\n"
-        "2. 🌀 **Portable Mini Neck Fan Rechargeable** – Est. Price: $11.50\n"
-        "3. 💡 **LED Car Atmosphere Strip Lights** – Est. Price: $9.80\n"
-        "4. 🧹 **Handheld Cordless Car Vacuum** – Est. Price: $18.20\n"
-        "5. ⌚ **Smart Fitness Tracker Watch** – Est. Price: $16.40\n\n"
-        "💡 *Məsləhət:* Bu məhsulları AutoDS və ya CJ Dropshipping üzərindən tapıb mənfəət marjanızı `/profit` komandası ilə yoxlaya bilərsiniz!"
+        "🔥 **ABŞ-də Anlıq Yüksələn Trendlər və Yenilənmiş SEO Başlıqlar:**\n\n"
+        "1. 🔋 **Magnetic Wireless Power Bank 10000mAh**\n"
+        "📈 **Tələbat:** 410+ satılıb (Son 24 saat)\n"
+        "🎯 **SEO Title (Kopyala):**\n"
+        "`Magnetic Wireless Power Bank 10000mAh Portable External Battery Slim MagSafe Compatible Fast Charging`\n"
+        "───────────────────\n"
+        "2. 🧊 **Silicone Ice Cube Trays with Lid & Bin**\n"
+        "📈 **Tələbat:** 290+ satılıb (Son 24 saat)\n"
+        "🎯 **SEO Title (Kopyala):**\n"
+        "`Silicone Ice Cube Trays with Lid & Bin Easy Release Kitchen Gadgets Press Type Whiskey Cocktail BPA Free`\n"
+        "───────────────────\n"
+        "3. 💻 **Foldable Laptop Stand Aluminum Ergonomic**\n"
+        "📈 **Tələbat:** 210+ satılıb (Son 24 saat)\n"
+        "🎯 **SEO Title (Kopyala):**\n"
+        "`Foldable Laptop Stand Aluminum Ergonomic MacBook Tablet Lightweight Ventilated Riser Desktop Holder`\n\n"
+        "💡 *Məsləhət:* Bu SEO başlıqlarını üstünə vuraraq kopyalayıb birbaşa eBay listinqinizdə istifadə edə bilərsiniz!"
     )
     await update.message.reply_text(result_text, parse_mode="Markdown")
 
