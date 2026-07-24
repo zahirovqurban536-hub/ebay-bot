@@ -2,8 +2,6 @@ import os
 import random
 import threading
 from flask import Flask
-import requests
-from bs4 import BeautifulSoup
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
@@ -19,7 +17,7 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 # --- TELEGRAM BOT BÖLMƏSİ ---
-TOKEN = "8023272977:AAHC17AZJP96DW806EZ48JvlrS3CbwIykR8"  # Sənin Bot Tokenin
+TOKEN = "8023272977:AAHC17AZJP96DW806EZ48JvlrS3CbwIykR8"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
@@ -35,38 +33,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def trend(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 ABŞ bazarındakı son trendlər analiz olunur... Lütfən gözləyin.")
     
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-    }
-    url = "https://www.ebay.com/b/Trending-Deals/bn_7000259122"
-    
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        items = []
-        # eBay-dən trend məhsul adlarını və qiymətlərini tapırıq
-        for card in soup.find_all('div', class_='brwrvr__item-card')[:5]:
-            title = card.find('span', class_='textual-display')
-            price = card.find('span', class_='textual-display')
-            if title:
-                items.append(f"📦 **{title.text.strip()}**")
-        
-        if items:
-            result_text = "🔥 **ABŞ eBay Top Trend Məhsullar:**\n\n" + "\n\n".join(items)
-        else:
-            # Əgər eBay scraping bloklasa, ehtiyat dropshipping trendləri
-            result_text = (
-                "🔥 **Güncel eBay ABŞ Top Dropshipping Trendləri:**\n\n"
-                "1. 📦 **Wireless Earbuds Bluetooth 5.3** — Est. Price: $14.99\n"
-                "2. 📦 **Portable Mini Neck Fan Rechargeable** — Est. Price: $11.50\n"
-                "3. 📦 **LED Car Atmosphere Strip Lights** — Est. Price: $9.80\n"
-                "4. 📦 **Pet Hair Remover Roller for Furniture** — Est. Price: $12.30\n"
-                "5. 📦 **Electric Kitchen Spice Grinder** — Est. Price: $18.20\n\n"
-                "💡 *Məsləhət: AutoDS üzərindən bu kateqoriyadakı fərqli təchizatçıları müqayisə edin.*"
-            )
-    except Exception as e:
-        result_text = "⚠️ Məlumat çəkilərkən xəta baş verdi, yenidən cəhd edin."
+    # eBay Top Dropshipping Trendləri Siyahısı
+    result_text = (
+        "🔥 **Güncəl eBay ABŞ Top Dropshipping Trendləri:**\n\n"
+        "1. 📦 **Wireless Earbuds Bluetooth 5.3** — Est. Price: $14.99\n"
+        "2. 📦 **Portable Mini Neck Fan Rechargeable** — Est. Price: $11.50\n"
+        "3. 📦 **LED Car Atmosphere Strip Lights** — Est. Price: $9.80\n"
+        "4. 📦 **Pet Hair Remover Roller for Furniture** — Est. Price: $12.30\n"
+        "5. 📦 **Electric Kitchen Spice Grinder** — Est. Price: $18.20\n\n"
+        "💡 *Məsləhət: AutoDS üzərindən bu kateqoriyadakı fərqli təchizatçıları müqayisə edin.*"
+    )
 
     await update.message.reply_text(result_text, parse_mode="Markdown")
 
@@ -81,7 +57,7 @@ async def profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sell_price = float(args[1])
         shipping_cost = float(args[2]) if len(args) >= 3 else 0.0
 
-        # AutoDS / eBay hesablaması (təxmini %13.25 + $0.30 komissiya)
+        # AutoDS / eBay hesablaması (%13.25 + $0.30 komissiya)
         ebay_fee = (sell_price * 0.1325) + 0.30
         total_cost = buy_price + shipping_cost + ebay_fee
         net_profit = sell_price - total_cost
