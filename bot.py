@@ -8,7 +8,7 @@ TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
 app = Flask(__name__)
 
-# --- HIGH-DEMAND TREND DROPSHIPPING PRODUCTS (30+ REAL ITEMS) ---
+# --- HIGH-DEMAND TREND DROPSHIPPING PRODUCTS (30 REAL ITEMS) ---
 PRODUCTS = [
     {
         "title": "Aesthetic Sunset Lamp Projection LED Night Light for Room Decor",
@@ -222,7 +222,6 @@ PRODUCTS = [
     }
 ]
 
-# --- MEMORY SYSTEM FOR NO DUPLICATES ---
 shown_products = []
 
 def calculate_fees_and_profit(supplier_price, ebay_price, shipping_cost=0.0):
@@ -235,24 +234,25 @@ def calculate_fees_and_profit(supplier_price, ebay_price, shipping_cost=0.0):
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
-        "🤖 **eBay Dropshipping Trend & Analytics Bot**\n\n"
+        "🤖 **eBay Dropshipping All-in-One Bot**\n\n"
         "Mövcud Komandalar:\n"
         "🔥 `/trend` - Bazarda hər gün 5+ satan real trend məhsulları göstərir.\n"
-        "💰 `/profit <alış> <satış> [kargo]` - AutoDS üslubunda dəqiq mənfəət hesblayır.\n\n"
-        "_Misal:_ `/profit 10 25` və ya `/profit 10 25 3`"
+        "💰 `/profit <alış> <satış> [kargo]` - AutoDS üslubunda dəqiq mənfəət hesablayır.\n"
+        "🏷 `/title <məhsul adı>` - Məhsulun üçün SEO optimallaşdırılmış eBay başlığı təklif edir.\n\n"
+        "_Misallar:_\n"
+        "• `/profit 10 25`\n"
+        "• `/title car phone holder`"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
 async def trend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global shown_products
     
-    # Check if all products have been shown once
     if len(shown_products) >= len(PRODUCTS):
         shown_products.clear()
         
     available_products = [p for p in PRODUCTS if p not in shown_products]
     
-    # Pick up to 3 unseen products
     selected_count = min(3, len(available_products))
     selected = random.sample(available_products, selected_count)
     shown_products.extend(selected)
@@ -305,11 +305,50 @@ async def profit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("⚠️ Zəhmət olmasa qiymətləri yalnız rəqəmlə daxil edin. Misal: `/profit 12.5 30`", parse_mode="Markdown")
 
+async def title_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "⚠️ **Format:** `/title <məhsul_adı>`\n\n_Misal:_ `/title sunset lamp` və ya `/title wireless car charger`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    raw_input = " ".join(args).title()
+    
+    # High-converting SEO keywords
+    power_words = ["New", "Premium", "Portable", "Upgrade", "Pro", "Universal", "Heavy Duty", "High Quality"]
+    fillers = ["Fast Shipping", "US Stock", "Best Gift", "Top Rated", "Durable Design"]
+    
+    p1 = random.choice(power_words)
+    p2 = random.choice(power_words)
+    f1 = random.choice(fillers)
+    f2 = random.choice(fillers)
+    
+    t1 = f"{p1} {raw_input} - {f1} Brand New Premium Quality"
+    t2 = f"{raw_input} {p2} Model Universal - {f2} Fast Delivery"
+    t3 = f"{p1} {raw_input} Heavy Duty Durable - {f1} Top Rated"
+    
+    # Trim to 80 chars max for eBay
+    t1 = t1[:80]
+    t2 = t2[:80]
+    t3 = t3[:80]
+    
+    res = (
+        f"🎯 **`{raw_input}` üçün eBay SEO Başlıqları (Max 80 Simvol):**\n\n"
+        f"1️⃣ `{t1}`\n"
+        f"2️⃣ `{t2}`\n"
+        f"3️⃣ `{t3}`\n\n"
+        f"💡 _İstədiyin başlığın üstünə basaraq kopyalaya və eBay-də listing edərkən istifadə edə bilərsən._"
+    )
+    await update.message.reply_text(res, parse_mode="Markdown")
+
 # --- FLASK & TELEGRAM WEBHOOK SETTINGS ---
 telegram_app = Application.builder().token(TOKEN).build()
 telegram_app.add_handler(CommandHandler("start", start_command))
 telegram_app.add_handler(CommandHandler("trend", trend_command))
 telegram_app.add_handler(CommandHandler("profit", profit_command))
+telegram_app.add_handler(CommandHandler("title", title_command))
 
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
