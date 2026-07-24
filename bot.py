@@ -5,6 +5,17 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
+TOKEN = "8923272977:AAHC17AZuP96DW8O0EZ40JvlrS3CbwIykR8"
+
+# --- FLASK WEB SERVER ---
+app = Flask(__name__)
+import os
+import random
+import threading
+from flask import Flask
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+
 # --- FLASK WEB SERVER (Render üçün) ---
 app = Flask(__name__)
 
@@ -16,8 +27,6 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
     
-    TOKEN = "8923272977:AAHC17AZuP96DW8O0EZ40JvlrS3CbwIykR8"
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "🚀 **eBay Dropshipping Analiz Botuna Xoş Geldiniz!**\n\n"
