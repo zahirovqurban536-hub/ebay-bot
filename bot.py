@@ -1,17 +1,29 @@
 import os
+import asyncio
 import logging
+from flask import Flask
+from threading import Thread
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from google import genai
 
-# Loqları göstərmək üçün
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# Environment dəyişənləri
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Gemini AI Klienti
+# Flask ilə mini port serveri (Render rahat işləsin deyə)
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot aktivdir və işləyir!", 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+# Gemini Klienti
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -41,26 +53,37 @@ async def generate_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     - Return ONLY 3 unique title options, numbered 1 to 3. Do not add any intro/outro text.
     """
 
-    try:
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt,
-        )
-        await update.message.reply_text(f"🚀 **Təklif Olunan eBay Başlıqları:**\n\n{response.text}")
-    except Exception as e:
-        await update.message.reply_text(f"Xəta baş verdi: {str(e)}")
+    # Modelləri sırayla yoxlayırıq ki, 403 xətası olmasın
+    models_to_try = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash']
+    response_text = None
+
+    for model_name in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
+            response_text = response.text
+            break
+        except Exception as e:
+            continue
+
+    if response_text:
+        await update.message.reply_text(f"🚀 **Təklif Olunan eBay Başlıqları:**\n\n{response_text}")
+    else:
+        await update.message.reply_text("Xəta: API Key icazəsi məhdudlaşdırılıb (403). Lütfən Google AI Studio-dan yeni API Key götürüb Render Environment-ə əlavə edin.")
 
 def main():
-    # Telegram Bot tətbiqini qururuq
-    app = Application.builder().token(TOKEN).build()
+    # Flask-ı arxa fonda işə salırıq
+    Thread(target=run_flask).start()
 
-    # Əmrləri əlavə edirik
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("title", generate_title))
+    # Telegram botu işə salırıq
+    bot_app = Application.builder().token(TOKEN).build()
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("title", generate_title))
 
-    print("Bot işə düşdü...")
-    # Polling rejimi (Ən rahat və rəvan üsul)
-    app.run_polling(drop_pending_updates=True)
+    print("Bot uğurla başlatıldı...")
+    bot_app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
