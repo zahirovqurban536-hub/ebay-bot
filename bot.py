@@ -358,6 +358,75 @@ async def title_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💡 _Başlığın üstünə basaraq kopyala və eBay-ə yapışdır._"
     )
     await update.message.reply_text(res, parse_mode="Markdown")
+    # --- AI MƏHSUL ANALİZİ ---
+
+async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Məhsul adını yaz.\n\n"
+            "Misal:\n"
+            "/analyze calming pet bed"
+        )
+        return
+
+    product = " ".join(context.args)
+
+    prompt = f"""
+Sən eBay dropshipping üzrə məhsul analiz köməkçisisən.
+
+İstifadəçi bu məhsulu analiz etməyini istəyir:
+{product}
+
+Vacib qayda:
+Canlı eBay və supplier məlumatlarına çıxışın yoxdursa, rəqəmləri uydurma.
+Məlumat çatışmırsa bunu açıq şəkildə bildir və istifadəçidən
+eBay satış qiyməti, sold sayı və supplier qiymətini istə.
+
+Analizi Azərbaycan dilində və bu formatda ver:
+
+🔎 MƏHSUL ANALİZİ
+
+📦 Məhsul:
+📈 Tələb:
+🏆 Rəqabət:
+💰 Satış potensialı:
+📦 Supplier uyğunluğu:
+⚠️ Risklər:
+
+💵 PROFİT:
+- Satış qiyməti:
+- Alış qiyməti:
+- Shipping:
+- eBay xərcləri:
+- Təxmini xalis profit:
+
+🎯 SCORE: /100
+
+NƏTİCƏ:
+🟢 GO
+🟡 MAYBE
+🔴 NO-GO
+
+Əgər real rəqəmlər verilməyibsə, SCORE və profit üçün
+dəqiq rəqəm uydurma.
+"""
+
+    try:
+        response = gemini_client.models.generate_content(
+            model="gemini-3.6-flash",
+            contents=prompt
+        )
+
+        await update.message.reply_text(
+            "🔎 **AI MƏHSUL ANALİZİ**\n\n" + response.text,
+            parse_mode="Markdown"
+        )
+
+    except Exception as e:
+        print("Analyze error:", e)
+        await update.message.reply_text(
+            "❌ Məhsul analizində xəta baş verdi. Render Logs-a baxmaq lazımdır."
+        )
 async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
@@ -396,12 +465,13 @@ def run_flask():
 
 def main():
     Thread(target=run_flask).start()
-
+    
     telegram_app = Application.builder().token(TOKEN).build()
     telegram_app.add_handler(CommandHandler("start", start_command))
     telegram_app.add_handler(CommandHandler("trend", trend_command))
     telegram_app.add_handler(CommandHandler("profit", profit_command))
     telegram_app.add_handler(CommandHandler("title", title_command))
+    telegram_app.add_handler(CommandHandler("analyze", analyze_command))
     telegram_app.add_handler(CommandHandler("ai", ai_command))
     print("Bot uğurla işə düşdü...")
     telegram_app.run_polling(drop_pending_updates=True)
