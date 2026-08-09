@@ -1,6 +1,7 @@
 import os
 import random
 from flask import Flask
+from google import genai
 from threading import Thread
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
