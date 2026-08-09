@@ -369,7 +369,7 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=prompt
         )
 
