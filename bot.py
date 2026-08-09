@@ -358,9 +358,35 @@ async def title_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💡 _Başlığın üstünə basaraq kopyala və eBay-ə yapışdır._"
     )
     await update.message.reply_text(res, parse_mode="Markdown")
+async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Misal:\n/ai eBay dropshipping üçün 3 məhsul ideyası ver"
+        )
+        return
 
-# --- RENDER VƏ FLASK SERVER ---
-@app.route("/")
+    prompt = " ".join(context.args)
+
+    try:
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
+
+        await update.message.reply_text(
+            "🤖 **AI:**\n\n" + response.text,
+            parse_mode="Markdown"
+        )
+
+    except Exception as e:
+        print("Gemini error:", e)
+        await update.message.reply_text(
+            "❌ AI ilə əlaqədə xəta baş verdi. Render Logs-a baxmaq lazımdır."
+        )
+
+
+
+
 def index():
     return "Bot 24/7 Aktivdir!", 200
 
@@ -376,7 +402,7 @@ def main():
     telegram_app.add_handler(CommandHandler("trend", trend_command))
     telegram_app.add_handler(CommandHandler("profit", profit_command))
     telegram_app.add_handler(CommandHandler("title", title_command))
-
+    telegram_app.add_handler(CommandHandler("ai", ai_command))
     print("Bot uğurla işə düşdü...")
     telegram_app.run_polling(drop_pending_updates=True)
 
