@@ -8,6 +8,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 app = Flask(__name__)
 
 # --- HIGH-DEMAND TREND DROPSHIPPING PRODUCTS (30 REAL ITEMS) ---
