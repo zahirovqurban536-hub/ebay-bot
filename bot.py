@@ -1,245 +1,115 @@
 import os
 import random
+import base64
+import requests
+
 from flask import Flask
 from google import genai
 from threading import Thread
+
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+)
 
 
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
+# =========================================================
+# ENVIRONMENT VARIABLES
+# =========================================================
+
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+EBAY_CLIENT_ID = os.environ.get("EBAY_CLIENT_ID")
+EBAY_CLIENT_SECRET = os.environ.get("EBAY_CLIENT_SECRET")
+
+
+# =========================================================
+# CLIENTS
+# =========================================================
 
 app = Flask(__name__)
 
+gemini_client = None
+
+if GEMINI_API_KEY:
+    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+
+
+# =========================================================
+# SAMPLE PRODUCT IDEAS
+# =========================================================
 
 PRODUCTS = [
     {
-        "title": "Aesthetic Sunset Lamp Projection LED Night Light for Room Decor",
-        "cat": "Home & Living / Decor",
-        "supplier_price": 6.50,
-        "est_ebay_price": 18.99,
-        "reason": "Gündəlik satışı yüksəkdir, TikTok viral ev dekorasiyası."
+        "title": "Calming Pet Bed for Dogs and Cats",
+        "cat": "Pet Supplies",
+        "supplier_price": 12.00,
+        "reason": "Pet niche has broad demand, but competition must be checked."
     },
     {
-        "title": "Portable Mini Vacuum Cleaner Wireless Handheld Cordless Dust Buster",
-        "cat": "Car Electronics / Home Cleaning",
+        "title": "Portable Mini Vacuum Cleaner Wireless",
+        "cat": "Home & Cleaning",
         "supplier_price": 9.20,
-        "est_ebay_price": 24.50,
-        "reason": "Avtomobil və masaüstü təmizlik üçün sabit satılan məhsuldur."
+        "reason": "Small and relatively easy to ship."
     },
     {
-        "title": "Ultrasonic Tooth Cleaner Electric Dental Scaler Plaque Remover",
-        "cat": "Health & Beauty / Dental Care",
-        "supplier_price": 8.00,
-        "est_ebay_price": 22.90,
-        "reason": "Şəxsi qulluq kateqoriyasında yüksək marjalı məhsuldur."
-    },
-    {
-        "title": "Electric Milk Frother Handheld Coffee Foam Maker Stainless Steel",
+        "title": "Electric Milk Frother Handheld",
         "cat": "Kitchen & Dining",
         "supplier_price": 3.80,
-        "est_ebay_price": 12.99,
-        "reason": "Aşağı qiymət və geniş alıcı auditoriyası var."
+        "reason": "Low-cost kitchen accessory with broad audience."
     },
     {
-        "title": "Adjustable Posture Corrector Shoulder Back Support Belt Straightener",
-        "cat": "Health & Fitness",
-        "supplier_price": 5.00,
-        "est_ebay_price": 15.80,
-        "reason": "Ofis işçiləri və tələbələr üçün maraqlı məhsuldur."
-    },
-    {
-        "title": "Wireless Bluetooth Beanie Hat Warm Winter Cap with Built-in Speakers",
-        "cat": "Apparel & Accessories / Tech Gadgets",
-        "supplier_price": 7.50,
-        "est_ebay_price": 19.99,
-        "reason": "Həm hədiyyəlik, həm də texnoloji geyim məhsuludur."
-    },
-    {
-        "title": "Automatic Pet Feeder Water Dispenser Bottle for Dogs and Cats",
-        "cat": "Pet Supplies",
-        "supplier_price": 11.00,
-        "est_ebay_price": 28.50,
-        "reason": "Ev heyvanı sahibləri üçün faydalı məhsuldur."
-    },
-    {
-        "title": "LED Motion Sensor Night Light Wireless USB Rechargeable Under Cabinet",
+        "title": "LED Motion Sensor Night Light",
         "cat": "Home Improvement / Lighting",
         "supplier_price": 4.50,
-        "est_ebay_price": 14.90,
-        "reason": "Mətbəx və şkaf işıqlandırmasında istifadə olunur."
+        "reason": "Useful household product with simple use case."
     },
     {
-        "title": "Portable Thermal Label Maker Bluetooth Wireless Mini Sticker Printer",
+        "title": "Portable Thermal Label Maker",
         "cat": "Office Supplies / Electronics",
         "supplier_price": 14.00,
-        "est_ebay_price": 34.99,
-        "reason": "Kiçik bizneslər və ev təşkilatçılığı üçün uyğundur."
+        "reason": "Useful for small businesses and organization."
     },
     {
-        "title": "Anti-Theft Waterproof Backpack USB Charging Port Laptop Travel Bag",
-        "cat": "Bags & Luggage",
-        "supplier_price": 12.50,
-        "est_ebay_price": 31.00,
-        "reason": "Səyahət və məktəb üçün istifadə olunan məhsuldur."
-    },
-    {
-        "title": "Silicone Hair Catcher Drain Protector Shower Tub Strainer Plug",
-        "cat": "Home & Kitchen / Bathroom",
-        "supplier_price": 1.50,
-        "est_ebay_price": 8.99,
-        "reason": "Çox ucuz maya dəyəri olan məhsuldur."
-    },
-    {
-        "title": "Electric Lint Remover Clothes Fuzz Pill Fabric Shaver Rechargeable",
-        "cat": "Household Gadgets",
-        "supplier_price": 6.80,
-        "est_ebay_price": 18.50,
-        "reason": "Geyim qulluğu üçün istifadə olunur."
-    },
-    {
-        "title": "Resistance Bands Set Exercise Elastic Loop for Home Workout Gym",
-        "cat": "Sports & Fitness",
-        "supplier_price": 5.20,
-        "est_ebay_price": 16.99,
-        "reason": "Yüngül və rahat göndərilən fitness məhsuludur."
-    },
-    {
-        "title": "Magnetic Phone Holder for Car Dashboard Air Vent Handsfree Mount",
+        "title": "Magnetic Phone Holder for Car",
         "cat": "Cell Phone Accessories",
         "supplier_price": 2.80,
-        "est_ebay_price": 11.50,
-        "reason": "Sürücülər üçün gündəlik istifadə olunan aksesuardır."
+        "reason": "Common automotive accessory."
     },
     {
-        "title": "Digital Food Kitchen Scale Stainless Steel Precision Cooking Measurement",
-        "cat": "Kitchen Accessories",
-        "supplier_price": 6.00,
-        "est_ebay_price": 17.50,
-        "reason": "Mətbəxdə geniş istifadə olunan məhsuldur."
-    },
-    {
-        "title": "Reusable Silicone Food Storage Covers Stretch Lids Bowl Wrap",
-        "cat": "Eco-Friendly / Kitchen",
-        "supplier_price": 3.00,
-        "est_ebay_price": 12.00,
-        "reason": "Mətbəx üçün faydalı və təkrar istifadə olunan məhsuldur."
-    },
-    {
-        "title": "Car Seat Gap Organizer Crevice Storage Box Leather Pocket Auto",
-        "cat": "Automotive / Interior Accessories",
-        "supplier_price": 8.50,
-        "est_ebay_price": 22.00,
-        "reason": "Avtomobil daxili səliqəsi üçün istifadə olunur."
-    },
-    {
-        "title": "Reusable Pet Hair Remover Roller Lint Brush for Dog Cat Fur Removing",
+        "title": "Pet Hair Remover Roller",
         "cat": "Pet Supplies / Cleaning",
         "supplier_price": 4.20,
-        "est_ebay_price": 15.99,
-        "reason": "Ev heyvanı sahibləri üçün faydalı təmizlik məhsuludur."
+        "reason": "Useful for pet owners and easy to demonstrate."
     },
     {
-        "title": "Foldable Desktop Tablet Phone Stand Adjustable Dock Holder",
-        "cat": "Office & Desk Accessories",
+        "title": "Foldable Desktop Phone Stand",
+        "cat": "Office Accessories",
         "supplier_price": 2.20,
-        "est_ebay_price": 9.99,
-        "reason": "Masaüstü üçün yüngül və ucuz aksesuardır."
+        "reason": "Small, inexpensive and easy to ship."
     },
-    {
-        "title": "Electric Vegetable Chopper Cutter Wireless Food Processor Garlic Slicer",
-        "cat": "Kitchen Gadgets",
-        "supplier_price": 7.80,
-        "est_ebay_price": 21.50,
-        "reason": "Mətbəx işlərini asanlaşdıran məhsuldur."
-    },
-    {
-        "title": "Ergonomic Memory Foam Lumbar Support Cushion Pillow for Office Chair",
-        "cat": "Office & Home Health",
-        "supplier_price": 10.50,
-        "est_ebay_price": 27.99,
-        "reason": "Ofis kreslosunda rahatlıq üçün istifadə olunur."
-    },
-    {
-        "title": "Waterproof Electric Face Cleansing Brush Sonic Silicone Facial Scrubber",
-        "cat": "Beauty & Personal Care",
-        "supplier_price": 5.90,
-        "est_ebay_price": 17.80,
-        "reason": "Şəxsi qulluq kateqoriyasındadır."
-    },
-    {
-        "title": "Smart Key Finder Bluetooth Tracker Wireless Anti-Lost Alarm Device",
-        "cat": "Electronics / Smart Home",
-        "supplier_price": 3.50,
-        "est_ebay_price": 13.50,
-        "reason": "Kiçik və hədiyyəlik texnoloji məhsuldur."
-    },
-    {
-        "title": "Stainless Steel Garlic Press Crusher Manual Mincer Kitchen Tool",
-        "cat": "Kitchen Tools",
-        "supplier_price": 2.10,
-        "est_ebay_price": 9.50,
-        "reason": "Ucuz mətbəx aksesuarıdır."
-    },
-    {
-        "title": "Compression Socks for Men Women Running Medical Nursing Circulation",
-        "cat": "Health / Apparel",
-        "supplier_price": 3.80,
-        "est_ebay_price": 14.20,
-        "reason": "İdman və gündəlik istifadə üçün məhsuldur."
-    },
-    {
-        "title": "Universal Travel Adapter All in One Plug International Power Converter",
-        "cat": "Travel Accessories / Electronics",
-        "supplier_price": 6.00,
-        "est_ebay_price": 18.99,
-        "reason": "Səyahət edənlər üçün faydalı aksesuardır."
-    },
-    {
-        "title": "Solar Power Bank Waterproof Portable Charger Dual USB External Battery",
-        "cat": "Cell Phone Accessories / Outdoor",
-        "supplier_price": 13.00,
-        "est_ebay_price": 32.50,
-        "reason": "Açıq hava və səyahət üçün istifadə olunur."
-    },
-    {
-        "title": "Non-Stick Silicone Baking Mat Oven Sheet Liner Pastry Cookie Cooking",
-        "cat": "Bakeware / Kitchen",
-        "supplier_price": 3.20,
-        "est_ebay_price": 12.50,
-        "reason": "Mətbəxdə təkrar istifadə olunan məhsuldur."
-    },
-    {
-        "title": "Digital Vernier Caliper Micrometer Electronic Measuring Tool Stainless",
-        "cat": "Tools & Home Improvement",
-        "supplier_price": 7.20,
-        "est_ebay_price": 20.90,
-        "reason": "Usta və hobbi istifadəçiləri üçün ölçü alətidir."
-    },
-    {
-        "title": "Adjustable Hand Grip Strengthener Forearm Heavy Gripper Trainer",
-        "cat": "Sports & Fitness",
-        "supplier_price": 3.10,
-        "est_ebay_price": 11.90,
-        "reason": "Fitness və məşq üçün istifadə olunan məhsuldur."
-    }
 ]
 
 
 shown_products = []
 
 
-def calculate_zdn_profit(
+# =========================================================
+# PROFIT CALCULATOR
+# =========================================================
+
+def calculate_profit(
     supplier_price,
     ebay_price,
-    shipping_charge=0.0,
-    shipping_cost=0.0
+    shipping_cost=0.0,
+    shipping_charge=0.0
 ):
     final_value_fee = ebay_price * 0.1325
     fixed_fee = 0.30
+
     total_ebay_fees = final_value_fee + fixed_fee
 
     total_costs = supplier_price + shipping_cost
@@ -262,91 +132,400 @@ def calculate_zdn_profit(
         final_value_fee,
         fixed_fee,
         net_profit,
-        margin
+        margin,
     )
 
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome_text = (
-        "🤖 eBay Dropshipping All-in-One Bot\n\n"
-        "Mövcud komandalar:\n\n"
-        "🔥 /trend - Məhsul ideyaları göstərir.\n"
-        "💰 /profit <alış> <satış> [kargo] - Profit hesablayır.\n"
-        "🏷 /title <məhsul adı> - eBay başlığı yaradır.\n"
-        "🔎 /analyze <məhsul> - AI məhsul analizi edir.\n"
-        "🤖 /ai <sual> - Ümumi AI köməkçisi.\n\n"
+# =========================================================
+# EBAY APPLICATION TOKEN
+# =========================================================
+
+def get_ebay_application_token():
+    """
+    Gets a fresh eBay Application OAuth token.
+
+    IMPORTANT:
+    The Client ID and Client Secret are read from
+    environment variables and are never hard-coded.
+    """
+
+    if not EBAY_CLIENT_ID or not EBAY_CLIENT_SECRET:
+        raise RuntimeError(
+            "EBAY_CLIENT_ID və ya EBAY_CLIENT_SECRET yoxdur."
+        )
+
+    credentials = (
+        f"{EBAY_CLIENT_ID}:{EBAY_CLIENT_SECRET}"
+    )
+
+    encoded_credentials = base64.b64encode(
+        credentials.encode("utf-8")
+    ).decode("utf-8")
+
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Authorization": f"Basic {encoded_credentials}",
+    }
+
+    data = {
+        "grant_type": "client_credentials",
+        "scope": (
+            "https://api.ebay.com/oauth/api_scope"
+        ),
+    }
+
+    response = requests.post(
+        "https://api.ebay.com/identity/v1/oauth2/token",
+        headers=headers,
+        data=data,
+        timeout=30,
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"eBay OAuth xətası: "
+            f"{response.status_code} "
+            f"{response.text[:500]}"
+        )
+
+    result = response.json()
+
+    token = result.get("access_token")
+
+    if not token:
+        raise RuntimeError(
+            "eBay access token alınmadı."
+        )
+
+    return token
+
+
+# =========================================================
+# EBAY PRODUCT SEARCH
+# =========================================================
+
+def ebay_search_products(
+    keyword,
+    limit=10
+):
+    """
+    Searches real eBay US listings using Browse API.
+    """
+
+    token = get_ebay_application_token()
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
+    }
+
+    params = {
+        "q": keyword,
+        "limit": min(limit, 50),
+    }
+
+    response = requests.get(
+        "https://api.ebay.com/buy/browse/v1/item_summary/search",
+        headers=headers,
+        params=params,
+        timeout=30,
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"eBay Search xətası: "
+            f"{response.status_code} "
+            f"{response.text[:700]}"
+        )
+
+    return response.json()
+
+
+# =========================================================
+# EBAY SEARCH FORMATTER
+# =========================================================
+
+def format_ebay_results(data):
+    items = data.get("itemSummaries", [])
+
+    if not items:
+        return (
+            "❌ eBay-də bu axtarış üçün məhsul tapılmadı."
+        )
+
+    total = data.get("total", 0)
+
+    lines = [
+        "🔎 REAL eBAY US NƏTİCƏLƏRİ",
+        "",
+        f"📦 Tapılan listing göstəricisi: {total}",
+        "",
+    ]
+
+    prices = []
+
+    for index, item in enumerate(items[:10], 1):
+
+        title = item.get(
+            "title",
+            "Adsız məhsul"
+        )
+
+        price_data = item.get(
+            "price",
+            {}
+        )
+
+        price_value = price_data.get(
+            "value"
+        )
+
+        currency = price_data.get(
+            "currency",
+            "USD"
+        )
+
+        seller = item.get(
+            "seller",
+            {}
+        )
+
+        feedback_score = seller.get(
+            "feedbackScore"
+        )
+
+        feedback_percentage = seller.get(
+            "feedbackPercentage"
+        )
+
+        item_location = item.get(
+            "itemLocation",
+            {}
+        )
+
+        location = item_location.get(
+            "city",
+            "Unknown"
+        )
+
+        if price_value is not None:
+            try:
+                numeric_price = float(price_value)
+                prices.append(numeric_price)
+                price_text = (
+                    f"${numeric_price:.2f} {currency}"
+                )
+            except (ValueError, TypeError):
+                price_text = str(price_value)
+        else:
+            price_text = "N/A"
+
+        lines.append(
+            f"{index}. {title}\n"
+            f"💵 Qiymət: {price_text}\n"
+            f"👤 Seller feedback: "
+            f"{feedback_score if feedback_score is not None else 'N/A'}"
+            f" / "
+            f"{feedback_percentage if feedback_percentage is not None else 'N/A'}\n"
+            f"📍 Location: {location}\n"
+        )
+
+    if prices:
+        average_price = sum(prices) / len(prices)
+
+        lines.append(
+            f"📊 İlk {len(prices)} nəticənin orta qiyməti: "
+            f"${average_price:.2f}"
+        )
+
+    lines.append(
+        "\n⚠️ Qeyd: 'sold', 'sell-through' və "
+        "son 30 gün satış sayı bu Browse API nəticəsindən "
+        "avtomatik çıxarılmır."
+    )
+
+    return "\n".join(lines)
+
+
+# =========================================================
+# START
+# =========================================================
+
+async def start_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    text = (
+        "🤖 eBay Dropshipping AI Bot\n\n"
+        "Komandalar:\n\n"
+        "🔥 /trend - Məhsul ideyaları\n"
+        "🔎 /ebay - Real eBay US axtarışı\n"
+        "💰 /profit - Profit hesabla\n"
+        "🏷 /title - eBay başlığı yarat\n"
+        "🧠 /analyze - AI məhsul analizi\n"
+        "🤖 /ai - Ümumi AI köməkçisi\n\n"
         "Misallar:\n"
-        "/profit 89.99 129.99\n"
-        "/title car phone holder\n"
+        "/ebay calming pet bed\n"
+        "/profit 12 29.99\n"
+        "/title calming pet bed\n"
         "/analyze calming pet bed\n"
-        "/ai eBay dropshipping üçün 3 məhsul ideyası ver"
+        "/ai eBay dropshipping üçün məhsul ideyası ver"
     )
 
-    await update.message.reply_text(welcome_text)
+    await update.message.reply_text(text)
 
 
-async def trend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# TREND
+# =========================================================
+
+async def trend_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     global shown_products
 
     if len(shown_products) >= len(PRODUCTS):
         shown_products.clear()
 
-    available_products = [
-        p for p in PRODUCTS
-        if p not in shown_products
+    available = [
+        product
+        for product in PRODUCTS
+        if product not in shown_products
     ]
 
-    selected_count = min(3, len(available_products))
+    selected_count = min(
+        3,
+        len(available)
+    )
 
     selected = random.sample(
-        available_products,
+        available,
         selected_count
     )
 
     shown_products.extend(selected)
 
     response = (
-        f"🔥 Günün Yüksək Tələbatlı Məhsulları "
-        f"({len(shown_products)}/{len(PRODUCTS)} baxıldı):\n\n"
+        "🔥 MƏHSUL İDEYALARI\n\n"
     )
 
-    for i, item in enumerate(selected, 1):
-
-        total_fees, _, _, profit, margin = calculate_zdn_profit(
-            item["supplier_price"],
-            item["est_ebay_price"]
-        )
+    for index, product in enumerate(
+        selected,
+        1
+    ):
 
         response += (
-            f"{i}. {item['title']}\n"
-            f"📁 Kateqoriya: {item['cat']}\n"
-            f"🛒 Alış Qiyməti: ${item['supplier_price']:.2f}\n"
-            f"🏷 Mümkün Satış: ${item['est_ebay_price']:.2f}\n"
-            f"💵 Təxmini Xalis Mənfəət: ${profit:.2f}\n"
-            f"📈 Marja: {margin:.1f}%\n"
-            f"💡 Niyə: {item['reason']}\n\n"
+            f"{index}. {product['title']}\n"
+            f"📁 {product['cat']}\n"
+            f"🛒 Təxmini supplier qiyməti: "
+            f"${product['supplier_price']:.2f}\n"
+            f"💡 {product['reason']}\n\n"
         )
 
-    await update.message.reply_text(response)
+    response += (
+        "⚠️ Bunlar ideyalardır, "
+        "real satış statistikası kimi qəbul etmə.\n\n"
+        "Real eBay nəticəsi üçün:\n"
+        "/ebay məhsul adı"
+    )
+
+    await update.message.reply_text(
+        response
+    )
 
 
-async def profit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# EBAY COMMAND
+# =========================================================
+
+async def ebay_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not context.args:
+
+        await update.message.reply_text(
+            "⚠️ Format:\n\n"
+            "/ebay calming pet bed\n\n"
+            "və ya:\n"
+            "/ebay wireless phone holder"
+        )
+
+        return
+
+    keyword = " ".join(
+        context.args
+    )
+
+    await update.message.reply_text(
+        "🔎 eBay US axtarılır...\n"
+        "Bir az gözlə..."
+    )
+
+    try:
+
+        data = ebay_search_products(
+            keyword,
+            limit=10
+        )
+
+        result = format_ebay_results(
+            data
+        )
+
+        await update.message.reply_text(
+            result
+        )
+
+    except Exception as error:
+
+        print(
+            "eBay error:",
+            repr(error)
+        )
+
+        await update.message.reply_text(
+            "❌ eBay API xətası.\n\n"
+            f"{str(error)[:1200]}"
+        )
+
+
+# =========================================================
+# PROFIT
+# =========================================================
+
+async def profit_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     args = context.args
 
     if len(args) < 2:
+
         await update.message.reply_text(
             "⚠️ Format:\n"
-            "/profit <alış_qiyməti> <satış_qiyməti> [kargo]\n\n"
+            "/profit <alış> <satış> [shipping]\n\n"
             "Misal:\n"
-            "/profit 89.99 129.99"
+            "/profit 12 29.99 5"
         )
+
         return
 
     try:
 
-        supplier_price = float(args[0])
-        ebay_price = float(args[1])
+        supplier_price = float(
+            args[0]
+        )
+
+        ebay_price = float(
+            args[1]
+        )
 
         shipping_cost = (
             float(args[2])
@@ -354,135 +533,130 @@ async def profit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else 0.0
         )
 
-        total_fees, fvf, fixed_fee, net_profit, margin = (
-            calculate_zdn_profit(
-                supplier_price,
-                ebay_price,
-                0.0,
-                shipping_cost
-            )
-        )
-
-        status_icon = (
-            "🟢"
-            if net_profit > 0
-            else "🔴"
+        (
+            total_fees,
+            final_value_fee,
+            fixed_fee,
+            net_profit,
+            margin,
+        ) = calculate_profit(
+            supplier_price,
+            ebay_price,
+            shipping_cost
         )
 
         if net_profit > 0:
-            status_text = (
-                "Bu məhsul gəlirlidir."
-            )
+            status = "🟢 GO"
         else:
-            status_text = (
-                "Bu qiymətlərlə zərər edirsiniz."
-            )
+            status = "🔴 NO-GO"
 
-        res = (
-            "📊 ZDN Manager Stili Mənfəət Hesablanması\n\n"
-            f"📥 Alış Qiyməti: ${supplier_price:.2f}\n"
-            f"🏷 Satış Qiyməti: ${ebay_price:.2f}\n"
-            f"🚚 Kargo Xərci: ${shipping_cost:.2f}\n\n"
-            "💸 eBay Komissiyaları:\n"
-            f"• Final Value Fee: ${fvf:.2f}\n"
-            f"• Fixed Fee: ${fixed_fee:.2f}\n"
-            f"• Cəmi: ${total_fees:.2f}\n\n"
-            f"{status_icon} Xalis Mənfəət: ${net_profit:.2f}\n"
-            f"📈 Mənfəət Marjası: {margin:.2f}%\n\n"
-            f"💡 {status_text}"
+        response = (
+            "📊 PROFİT ANALİZİ\n\n"
+            f"🛒 Supplier: ${supplier_price:.2f}\n"
+            f"🏷 eBay satış: ${ebay_price:.2f}\n"
+            f"🚚 Shipping: ${shipping_cost:.2f}\n\n"
+            "💸 eBay xərcləri:\n"
+            f"• Final Value Fee: "
+            f"${final_value_fee:.2f}\n"
+            f"• Fixed Fee: "
+            f"${fixed_fee:.2f}\n"
+            f"• Cəmi: "
+            f"${total_fees:.2f}\n\n"
+            f"💰 Xalis profit: "
+            f"${net_profit:.2f}\n"
+            f"📈 Marja: "
+            f"{margin:.2f}%\n\n"
+            f"Nəticə: {status}"
         )
 
-        await update.message.reply_text(res)
+        await update.message.reply_text(
+            response
+        )
 
     except ValueError:
 
         await update.message.reply_text(
-            "⚠️ Qiymətləri yalnız rəqəmlə yaz.\n\n"
+            "❌ Qiymətləri rəqəmlə yaz.\n\n"
             "Misal:\n"
-            "/profit 89.99 129.99"
+            "/profit 12 29.99 5"
         )
 
 
-async def title_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# TITLE
+# =========================================================
 
-    args = context.args
+async def title_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
-    if not args:
+    if not context.args:
+
         await update.message.reply_text(
-            "⚠️ Format:\n"
-            "/title <məhsul_adı>\n\n"
-            "Misal:\n"
-            "/title sunset lamp"
+            "⚠️ Misal:\n"
+            "/title calming pet bed"
         )
+
         return
 
-    raw_input = " ".join(args).title()
-
-    qualities = [
-        "New",
-        "Premium",
-        "Heavy Duty",
-        "Professional",
-        "Upgraded",
-        "Ultra"
-    ]
-
-    features = [
-        "Portable",
-        "Universal",
-        "Wireless",
-        "Adjustable",
-        "Compact",
-        "Multi-Function"
-    ]
-
-    shipping_triggers = [
-        "US Stock",
-        "Fast Shipping",
-        "Fast Delivery",
-        "USA Seller"
-    ]
-
-    value_props = [
-        "Best Gift",
-        "Top Rated",
-        "High Quality",
-        "Durable Design",
-        "Easy to Use"
-    ]
-
-    def build_clean_title(template_type):
-
-        q = random.choice(qualities)
-        f = random.choice(features)
-        s = random.choice(shipping_triggers)
-        v = random.choice(value_props)
-
-        if template_type == 1:
-            title = f"{q} {raw_input} {f} - {s}"
-
-        elif template_type == 2:
-            title = f"{raw_input} {f} {v} - {s}"
-
-        else:
-            title = f"{q} {f} {raw_input} - {v}"
-
-        return title[:80].strip()
-
-    t1 = build_clean_title(1)
-    t2 = build_clean_title(2)
-    t3 = build_clean_title(3)
-
-    res = (
-        f"🎯 {raw_input} üçün eBay SEO başlıqları:\n\n"
-        f"1. {t1}\n"
-        f"2. {t2}\n"
-        f"3. {t3}\n\n"
-        "💡 Başlığı kopyalayıb eBay-ə yerləşdirə bilərsən."
+    raw_input = " ".join(
+        context.args
     )
 
-    await update.message.reply_text(res)
+    if gemini_client:
 
+        prompt = f"""
+Create 3 eBay product titles for:
+
+{raw_input}
+
+Rules:
+- Maximum 80 characters each
+- Natural English
+- Do not use fake claims
+- Do not say USA Seller unless known
+- Do not say Top Rated unless verified
+- Focus on useful searchable keywords
+"""
+
+        try:
+
+            response = gemini_client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=prompt
+            )
+
+            answer = response.text
+
+            await update.message.reply_text(
+                "🏷 eBay SEO TITLE\n\n"
+                + answer
+            )
+
+            return
+
+        except Exception as error:
+
+            print(
+                "Title AI error:",
+                repr(error)
+            )
+
+    fallback = (
+        f"{raw_input} - "
+        "Portable Adjustable Premium Design"
+    )
+
+    await update.message.reply_text(
+        "🏷 eBay TITLE:\n\n"
+        + fallback[:80]
+    )
+
+
+# =========================================================
+# ANALYZE
+# =========================================================
 
 async def analyze_command(
     update: Update,
@@ -492,37 +666,36 @@ async def analyze_command(
     if not context.args:
 
         await update.message.reply_text(
-            "⚠️ Məhsul adını yaz.\n\n"
-            "Misal:\n"
+            "⚠️ Misal:\n"
             "/analyze calming pet bed"
         )
 
         return
 
-    product = " ".join(context.args)
+    product = " ".join(
+        context.args
+    )
+
+    if not gemini_client:
+
+        await update.message.reply_text(
+            "❌ GEMINI_API_KEY tapılmadı."
+        )
+
+        return
 
     prompt = f"""
-Sən eBay dropshipping üzrə məhsul analiz köməkçisisən.
+Sən eBay dropshipping məhsul analiz köməkçisisən.
 
-İstifadəçi bu məhsulu analiz etməyini istəyir:
-
+Məhsul:
 {product}
 
-Vacib qayda:
+Vacib:
+Məndə bu məhsul üçün avtomatik olaraq
+sold count, sell-through və real supplier qiyməti
+yoxdursa, bunları UYDURMA.
 
-Canlı eBay və supplier məlumatlarına çıxışın yoxdursa,
-rəqəmləri uydurma.
-
-Məlumat çatışmırsa istifadəçidən bunları istə:
-
-1. eBay satış qiyməti
-2. Son 30 gündə sold sayı
-3. Supplier alış qiyməti
-4. Shipping xərci
-
-Analizi Azərbaycan dilində ver.
-
-FORMAT:
+Məhsulu bu formada analiz et:
 
 🔎 MƏHSUL ANALİZİ
 
@@ -539,7 +712,7 @@ FORMAT:
 - Alış qiyməti:
 - Shipping:
 - eBay xərcləri:
-- Təxmini xalis profit:
+- Təxmini profit:
 
 🎯 SCORE: /100
 
@@ -549,13 +722,14 @@ NƏTİCƏ:
 🟡 MAYBE
 🔴 NO-GO
 
-Əgər real rəqəmlər verilməyibsə:
+Əgər real rəqəmlər çatışmırsa,
+bunu açıq şəkildə bildir.
 
-- dəqiq profit uydurma
-- dəqiq SCORE uydurma
-- sold sayı uydurma
-
-Çatışmayan real məlumatları istifadəçidən istə.
+Heç vaxt:
+- sold count uydurma
+- sell-through uydurma
+- real satış sayı uydurma
+- real supplier qiyməti uydurma
 """
 
     try:
@@ -565,22 +739,32 @@ NƏTİCƏ:
             contents=prompt
         )
 
-        answer = response.text or "AI cavab qaytarmadı."
-
-        await update.message.reply_text(
-            "🔎 AI MƏHSUL ANALİZİ\n\n" + answer
+        answer = (
+            response.text
+            or "AI cavab qaytarmadı."
         )
 
-    except Exception as e:
-
-        print("Analyze error:", repr(e))
-
         await update.message.reply_text(
-            "❌ Məhsul analizində xəta baş verdi.\n\n"
-            "Xəta:\n"
-            + str(e)[:1000]
+            "🔎 AI MƏHSUL ANALİZİ\n\n"
+            + answer
         )
 
+    except Exception as error:
+
+        print(
+            "Analyze error:",
+            repr(error)
+        )
+
+        await update.message.reply_text(
+            "❌ Analiz xətası:\n"
+            + str(error)[:1000]
+        )
+
+
+# =========================================================
+# AI
+# =========================================================
 
 async def ai_command(
     update: Update,
@@ -591,12 +775,23 @@ async def ai_command(
 
         await update.message.reply_text(
             "⚠️ Misal:\n"
-            "/ai eBay dropshipping üçün 3 məhsul ideyası ver"
+            "/ai eBay dropshipping üçün "
+            "3 məhsul ideyası ver"
         )
 
         return
 
-    prompt = " ".join(context.args)
+    if not gemini_client:
+
+        await update.message.reply_text(
+            "❌ GEMINI_API_KEY tapılmadı."
+        )
+
+        return
+
+    prompt = " ".join(
+        context.args
+    )
 
     try:
 
@@ -605,22 +800,32 @@ async def ai_command(
             contents=prompt
         )
 
-        answer = response.text or "AI cavab qaytarmadı."
-
-        await update.message.reply_text(
-            "🤖 AI:\n\n" + answer
+        answer = (
+            response.text
+            or "AI cavab qaytarmadı."
         )
 
-    except Exception as e:
-
-        print("Gemini error:", repr(e))
-
         await update.message.reply_text(
-            "❌ AI ilə əlaqədə xəta baş verdi.\n\n"
-            "Xəta:\n"
-            + str(e)[:1000]
+            "🤖 AI:\n\n"
+            + answer
         )
 
+    except Exception as error:
+
+        print(
+            "Gemini error:",
+            repr(error)
+        )
+
+        await update.message.reply_text(
+            "❌ AI xətası:\n"
+            + str(error)[:1000]
+        )
+
+
+# =========================================================
+# FLASK
+# =========================================================
 
 @app.route("/")
 def index():
@@ -643,7 +848,17 @@ def run_flask():
     )
 
 
+# =========================================================
+# MAIN
+# =========================================================
+
 def main():
+
+    if not TELEGRAM_TOKEN:
+
+        raise RuntimeError(
+            "TELEGRAM_TOKEN tapılmadı."
+        )
 
     Thread(
         target=run_flask,
@@ -653,7 +868,7 @@ def main():
     telegram_app = (
         Application
         .builder()
-        .token(TOKEN)
+        .token(TELEGRAM_TOKEN)
         .build()
     )
 
@@ -668,6 +883,13 @@ def main():
         CommandHandler(
             "trend",
             trend_command
+        )
+    )
+
+    telegram_app.add_handler(
+        CommandHandler(
+            "ebay",
+            ebay_command
         )
     )
 
@@ -699,7 +921,9 @@ def main():
         )
     )
 
-    print("Bot uğurla işə düşdü...")
+    print(
+        "🤖 Bot uğurla işə düşdü..."
+    )
 
     telegram_app.run_polling(
         drop_pending_updates=True
@@ -708,3 +932,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
