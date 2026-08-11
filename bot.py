@@ -599,14 +599,13 @@ async def ebay_command(
                 "Score data extraction error:",
                 repr(score_error)
             )
-
-        score, decision = (
-            calculate_product_research_score(
-                total_listings,
-                prices,
-                sellers
-            )
-        )
+            
+            score, decision = (
+    calculate_product_research_score(
+        total_listings,
+        prices
+    )
+)
 
         # -------------------------------------------------
         # AI ANALİZİ
