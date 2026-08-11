@@ -542,12 +542,89 @@ async def ebay_command(
             limit=10
         )
 
-        result = format_ebay_results(
-            data
+        result = format_ebay_results(data)
+
+        # -------------------------------------------------
+        # REAL eBAY MƏLUMATLARINDAN SCORE
+        # -------------------------------------------------
+
+        total_listings = 0
+        prices = []
+        sellers = []
+
+        try:
+            if isinstance(data, dict):
+
+                total_listings = int(
+                    data.get("total", 0)
+                    or data.get("totalListings", 0)
+                    or 0
+                )
+
+                items = (
+                    data.get("items")
+                    or data.get("itemSummaries")
+                    or data.get("results")
+                    or []
+                )
+
+                for item in items:
+
+                    price = item.get("price")
+
+                    if isinstance(price, dict):
+                        price = price.get("value")
+
+                    try:
+                        if price is not None:
+                            prices.append(
+                                float(price)
+                            )
+                    except (ValueError, TypeError):
+                        pass
+
+                    seller = item.get("seller")
+
+                    if isinstance(seller, dict):
+                        feedback = (
+                            seller.get("feedbackScore")
+                            or seller.get("feedbackCount")
+                            or 0
+                        )
+                    else:
+                        feedback = (
+                            item.get("sellerFeedback")
+                            or 0
+                        )
+
+                    try:
+                        sellers.append(
+                            float(feedback)
+                        )
+                    except (ValueError, TypeError):
+                        pass
+
+        except Exception as score_error:
+
+            print(
+                "Score data extraction error:",
+                repr(score_error)
+            )
+
+        score, decision = (
+            calculate_product_research_score(
+                total_listings,
+                prices,
+                sellers
+            )
         )
 
-        # AI ilə əlavə məhsul analizi
+        # -------------------------------------------------
+        # AI ANALİZİ
+        # -------------------------------------------------
+
         if gemini_client:
+
             analysis_prompt = f"""
 Sən eBay US dropshipping product research köməkçisisən.
 
@@ -558,9 +635,14 @@ Aşağıdakı məlumatlar REAL eBay Browse API nəticələrindən gəlib:
 
 {result}
 
-Bu məlumatları analiz et.
+Sistem tərəfindən real məlumatlardan hesablanan ilkin score:
+{score}/100
+
+Sistem qərarı:
+{decision}
 
 VACİB QAYDALAR:
+
 - Seller feedback-i satış sayı kimi qəbul etmə.
 - Sold count verilməyibsə sold count UYDURMA.
 - Sell-through rate UYDURMA.
@@ -569,8 +651,14 @@ VACİB QAYDALAR:
 - Yalnız verilən eBay məlumatlarından nəticə çıxar.
 - Çox bahalı və qeyri-adi qiymətləri ayrıca qeyd et.
 - Təkrarlanan və çox oxşar listingləri rəqabət göstəricisi kimi nəzərə al.
+- Sistem score-unu səbəbsiz dəyişmə.
+- Satış sayı olmayan halda "çox satılır" demə.
+- Listing sayı tələbin dəqiq sübutu deyil.
+- Listing sayı ilə satış sayını qarışdırma.
 
-Cavabı Azərbaycan dilində bu formatda ver:
+Cavabı Azərbaycan dilində ver.
+
+FORMAT:
 
 🔥 EBAY PRODUCT RESEARCH
 
@@ -592,22 +680,25 @@ Cavabı Azərbaycan dilində bu formatda ver:
 📈 Satış potensialı:
 
 ⚠️ Vacib məlumat:
-Sold count / sell-through məlumatı yoxdursa bunu bildir.
+Sold count və sell-through məlumatı varsa göstər.
+Yoxdursa açıq şəkildə "məlumat yoxdur" yaz.
 
-🎯 PRODUCT SCORE: /100
+🎯 PRODUCT SCORE:
+{score}/100
 
 NƏTİCƏ:
-🟢 GO
-🟡 MAYBE
-🔴 NO-GO
+{decision}
 
 💡 Qısa səbəb:
 """
 
             try:
-                ai_response = gemini_client.models.generate_content(
-                    model="gemini-3.6-flash",
-                    contents=analysis_prompt
+
+                ai_response = (
+                    gemini_client.models.generate_content(
+                        model="gemini-3.6-flash",
+                        contents=analysis_prompt
+                    )
                 )
 
                 ai_answer = (
@@ -622,17 +713,34 @@ NƏTİCƏ:
                 )
 
             except Exception as ai_error:
+
                 print(
                     "eBay AI analysis error:",
                     repr(ai_error)
                 )
 
-                final_response = result
+                final_response = (
+                    result
+                    + "\n\n"
+                    + "🎯 PRODUCT SCORE: "
+                    + f"{score}/100\n"
+                    + f"📌 NƏTİCƏ: {decision}"
+                )
 
         else:
-            final_response = result
 
-        # Telegram mesaj limiti üçün hissələrə böl
+            final_response = (
+                result
+                + "\n\n"
+                + "🎯 PRODUCT SCORE: "
+                + f"{score}/100\n"
+                + f"📌 NƏTİCƏ: {decision}"
+            )
+
+        # -------------------------------------------------
+        # TELEGRAM MESAJ LİMİTİ
+        # -------------------------------------------------
+
         max_length = 3900
 
         for i in range(
@@ -640,8 +748,11 @@ NƏTİCƏ:
             len(final_response),
             max_length
         ):
+
             await update.message.reply_text(
-                final_response[i:i + max_length]
+                final_response[
+                    i:i + max_length
+                ]
             )
 
     except Exception as error:
