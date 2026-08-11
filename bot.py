@@ -444,15 +444,15 @@ async def trend_command(
 
 def calculate_product_research_score(
     total_listings,
-    prices,
-    sellers
+    prices
 ):
     """
-    eBay Browse API nəticələrindən
-    sadə və şəffaf product research score hesablayır.
+    Yalnız real eBay Browse API məlumatlarından
+    sadə product research score hesablayır.
 
-    Sold count olmadığı üçün satış sayını
-    və sell-through rate-i hesablamağa çalışmır.
+    Sold count, sell-through və supplier qiyməti
+    olmadığı üçün bunları hesaba qatmır.
+    Seller feedback də score üçün istifadə edilmir.
     """
 
     score = 50
@@ -460,43 +460,30 @@ def calculate_product_research_score(
     # Listing sayı
     if total_listings < 500:
         score += 15
+
     elif total_listings < 1500:
         score += 8
+
     elif total_listings < 3000:
         score -= 5
+
     else:
         score -= 15
 
     # Qiymət məlumatı
     if prices:
+
         minimum = min(prices)
         maximum = max(prices)
 
         if minimum > 0:
+
             price_range = maximum / minimum
 
             if price_range < 3:
                 score += 10
+
             elif price_range > 10:
-                score -= 5
-
-    # Seller feedback
-    if sellers:
-        valid_feedback = [
-            s for s in sellers
-            if isinstance(s, (int, float))
-            and s >= 0
-        ]
-
-        if valid_feedback:
-            average_feedback = (
-                sum(valid_feedback)
-                / len(valid_feedback)
-            )
-
-            if average_feedback < 1000:
-                score += 5
-            elif average_feedback > 10000:
                 score -= 5
 
     # 0-100 aralığında saxla
@@ -507,8 +494,10 @@ def calculate_product_research_score(
 
     if score >= 70:
         decision = "🟢 GO"
+
     elif score >= 50:
         decision = "🟡 MAYBE"
+
     else:
         decision = "🔴 NO-GO"
 
