@@ -448,27 +448,23 @@ async def ebay_command(
 ):
 
     if not context.args:
-
         await update.message.reply_text(
             "⚠️ Format:\n\n"
             "/ebay calming pet bed\n\n"
             "və ya:\n"
             "/ebay wireless phone holder"
         )
-
         return
 
-    keyword = " ".join(
-        context.args
-    )
+    keyword = " ".join(context.args)
 
     await update.message.reply_text(
         "🔎 eBay US axtarılır...\n"
+        "🤖 Məhsullar analiz edilir...\n"
         "Bir az gözlə..."
     )
 
     try:
-
         data = ebay_search_products(
             keyword,
             limit=10
@@ -478,9 +474,103 @@ async def ebay_command(
             data
         )
 
-        await update.message.reply_text(
-            result
-        )
+        # AI ilə əlavə məhsul analizi
+        if gemini_client:
+            analysis_prompt = f"""
+Sən eBay US dropshipping product research köməkçisisən.
+
+Axtarılan məhsul:
+{keyword}
+
+Aşağıdakı məlumatlar REAL eBay Browse API nəticələrindən gəlib:
+
+{result}
+
+Bu məlumatları analiz et.
+
+VACİB QAYDALAR:
+- Seller feedback-i satış sayı kimi qəbul etmə.
+- Sold count verilməyibsə sold count UYDURMA.
+- Sell-through rate UYDURMA.
+- Supplier qiyməti verilməyibsə supplier qiyməti UYDURMA.
+- Trend olduğunu dəqiq sübut edən məlumat yoxdursa bunu açıq yaz.
+- Yalnız verilən eBay məlumatlarından nəticə çıxar.
+- Çox bahalı və qeyri-adi qiymətləri ayrıca qeyd et.
+- Təkrarlanan və çox oxşar listingləri rəqabət göstəricisi kimi nəzərə al.
+
+Cavabı Azərbaycan dilində bu formatda ver:
+
+🔥 EBAY PRODUCT RESEARCH
+
+📦 Məhsul:
+🇺🇸 eBay nəticələri:
+
+💰 Qiymət:
+- Minimum:
+- Maksimum:
+- Orta:
+
+🏆 Rəqabət:
+🟢 Aşağı
+🟡 Orta
+🔴 Yüksək
+
+👥 Seller vəziyyəti:
+
+📈 Satış potensialı:
+
+⚠️ Vacib məlumat:
+Sold count / sell-through məlumatı yoxdursa bunu bildir.
+
+🎯 PRODUCT SCORE: /100
+
+NƏTİCƏ:
+🟢 GO
+🟡 MAYBE
+🔴 NO-GO
+
+💡 Qısa səbəb:
+"""
+
+            try:
+                ai_response = gemini_client.models.generate_content(
+                    model="gemini-3.6-flash",
+                    contents=analysis_prompt
+                )
+
+                ai_answer = (
+                    ai_response.text
+                    or "AI analiz qaytarmadı."
+                )
+
+                final_response = (
+                    result
+                    + "\n\n"
+                    + ai_answer
+                )
+
+            except Exception as ai_error:
+                print(
+                    "eBay AI analysis error:",
+                    repr(ai_error)
+                )
+
+                final_response = result
+
+        else:
+            final_response = result
+
+        # Telegram mesaj limiti üçün hissələrə böl
+        max_length = 3900
+
+        for i in range(
+            0,
+            len(final_response),
+            max_length
+        ):
+            await update.message.reply_text(
+                final_response[i:i + max_length]
+            )
 
     except Exception as error:
 
@@ -491,10 +581,9 @@ async def ebay_command(
 
         await update.message.reply_text(
             "❌ eBay API xətası.\n\n"
-            f"{str(error)[:1200]}"
+            + str(error)[:1200]
         )
-
-
+        
 # =========================================================
 # PROFIT
 # =========================================================
