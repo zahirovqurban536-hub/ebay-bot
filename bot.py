@@ -1209,11 +1209,13 @@ async def analyze_command(
         # =================================================
 
         score, decision = (
-            calculate_product_research_score(
-                total_listings,
-                prices
-            )
-        )
+    calculate_product_research_score(
+        total_listings,
+        prices,
+        sellers,
+        titles
+    )
+)
 
         # =================================================
         # AI ANALYSIS
