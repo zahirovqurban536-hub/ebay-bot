@@ -533,84 +533,47 @@ async def ebay_command(
 
         result = format_ebay_results(data)
 
-        # -------------------------------------------------
-        # REAL eBAY MƏLUMATLARINDAN SCORE
-        # -------------------------------------------------
-
+        # REAL eBAY MƏLUMATLARINDAN SCORE ÜÇÜN
         total_listings = 0
         prices = []
-        sellers = []
 
-        try:
-            if isinstance(data, dict):
+        if isinstance(data, dict):
 
-                total_listings = int(
-                    data.get("total", 0)
-                    or data.get("totalListings", 0)
-                    or 0
-                )
-
-                items = (
-                    data.get("items")
-                    or data.get("itemSummaries")
-                    or data.get("results")
-                    or []
-                )
-
-                for item in items:
-
-                    price = item.get("price")
-
-                    if isinstance(price, dict):
-                        price = price.get("value")
-
-                    try:
-                        if price is not None:
-                            prices.append(
-                                float(price)
-                            )
-                    except (ValueError, TypeError):
-                        pass
-
-                    seller = item.get("seller")
-
-                    if isinstance(seller, dict):
-                        feedback = (
-                            seller.get("feedbackScore")
-                            or seller.get("feedbackCount")
-                            or 0
-                        )
-                    else:
-                        feedback = (
-                            item.get("sellerFeedback")
-                            or 0
-                        )
-
-                    try:
-                        sellers.append(
-                            float(feedback)
-                        )
-                    except (ValueError, TypeError):
-                        pass
-
-        except Exception as score_error:
-
-            print(
-                "Score data extraction error:",
-                repr(score_error)
+            total_listings = int(
+                data.get("total", 0)
+                or data.get("totalListings", 0)
+                or 0
             )
-            
-            score, decision = (
-    calculate_product_research_score(
-        total_listings,
-        prices
-    )
-)
 
-        # -------------------------------------------------
+            items = (
+                data.get("itemSummaries")
+                or data.get("items")
+                or data.get("results")
+                or []
+            )
+
+            for item in items:
+
+                price = item.get("price")
+
+                if isinstance(price, dict):
+                    price = price.get("value")
+
+                try:
+                    if price is not None:
+                        prices.append(
+                            float(price)
+                        )
+                except (ValueError, TypeError):
+                    pass
+
+        # SCORE HƏR HALDA HESABLANIR
+        score, decision = calculate_product_research_score(
+            total_listings,
+            prices
+        )
+
         # AI ANALİZİ
-        # -------------------------------------------------
-
         if gemini_client:
 
             analysis_prompt = f"""
@@ -639,7 +602,7 @@ VACİB QAYDALAR:
 - Yalnız verilən eBay məlumatlarından nəticə çıxar.
 - Çox bahalı və qeyri-adi qiymətləri ayrıca qeyd et.
 - Təkrarlanan və çox oxşar listingləri rəqabət göstəricisi kimi nəzərə al.
-- Sistem score-unu səbəbsiz dəyişmə.
+- Sistem score-unu dəyişmə.
 - Satış sayı olmayan halda "çox satılır" demə.
 - Listing sayı tələbin dəqiq sübutu deyil.
 - Listing sayı ilə satış sayını qarışdırma.
@@ -654,22 +617,20 @@ FORMAT:
 🇺🇸 eBay nəticələri:
 
 💰 Qiymət:
+
 - Minimum:
 - Maksimum:
 - Orta:
 
 🏆 Rəqabət:
-🟢 Aşağı
-🟡 Orta
-🔴 Yüksək
 
 👥 Seller vəziyyəti:
 
 📈 Satış potensialı:
 
 ⚠️ Vacib məlumat:
-Sold count və sell-through məlumatı varsa göstər.
-Yoxdursa açıq şəkildə "məlumat yoxdur" yaz.
+Sold count və sell-through məlumatı yoxdursa
+açıq şəkildə "məlumat yoxdur" yaz.
 
 🎯 PRODUCT SCORE:
 {score}/100
@@ -682,11 +643,9 @@ NƏTİCƏ:
 
             try:
 
-                ai_response = (
-                    gemini_client.models.generate_content(
-                        model="gemini-3.6-flash",
-                        contents=analysis_prompt
-                    )
+                ai_response = gemini_client.models.generate_content(
+                    model="gemini-3.6-flash",
+                    contents=analysis_prompt
                 )
 
                 ai_answer = (
@@ -710,8 +669,7 @@ NƏTİCƏ:
                 final_response = (
                     result
                     + "\n\n"
-                    + "🎯 PRODUCT SCORE: "
-                    + f"{score}/100\n"
+                    + f"🎯 PRODUCT SCORE: {score}/100\n"
                     + f"📌 NƏTİCƏ: {decision}"
                 )
 
@@ -720,15 +678,11 @@ NƏTİCƏ:
             final_response = (
                 result
                 + "\n\n"
-                + "🎯 PRODUCT SCORE: "
-                + f"{score}/100\n"
+                + f"🎯 PRODUCT SCORE: {score}/100\n"
                 + f"📌 NƏTİCƏ: {decision}"
             )
 
-        # -------------------------------------------------
         # TELEGRAM MESAJ LİMİTİ
-        # -------------------------------------------------
-
         max_length = 3900
 
         for i in range(
@@ -736,7 +690,6 @@ NƏTİCƏ:
             len(final_response),
             max_length
         ):
-
             await update.message.reply_text(
                 final_response[
                     i:i + max_length
@@ -744,6 +697,16 @@ NƏTİCƏ:
             )
 
     except Exception as error:
+
+        print(
+            "eBay error:",
+            repr(error)
+        )
+
+        await update.message.reply_text(
+            "❌ eBay API xətası.\n\n"
+            + str(error)[:1200]
+        )
 
         print(
             "eBay error:",
