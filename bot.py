@@ -737,11 +737,42 @@ async def ebay_command(
         # PRODUCT SCORE
         # =================================================
 
-        score, decision = calculate_product_research_score(
-            total_listings,
-            prices
-        )
+             sellers = []
+    titles = []
 
+    for item in items:
+
+        title = item.get("title", "")
+        if title:
+            titles.append(title)
+
+        seller = item.get("seller", {})
+
+        if isinstance(seller, dict):
+            feedback = seller.get("feedbackScore", 0)
+        else:
+            feedback = 0
+
+        try:
+            sellers.append(float(feedback))
+        except (ValueError, TypeError):
+            pass
+
+    # =================================================
+    # PRODUCT SCORE
+    # =================================================
+
+    (
+        score,
+        decision,
+        data_confidence,
+        breakdown
+    ) = calculate_product_research_score(
+        total_listings,
+        prices,
+        sellers,
+        titles
+    )
         # =================================================
         # AI PRODUCT RESEARCH
         # =================================================
