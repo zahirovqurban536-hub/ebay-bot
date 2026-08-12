@@ -938,44 +938,40 @@ Product:
 # ANALYZE
 # =========================================================
 
+
 async def analyze_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
     if not context.args:
-
         await update.message.reply_text(
             "⚠️ Misal:\n"
-            "/analyze calming pet bed"
+            "/analyze electric milk frother"
         )
-
         return
 
-    product = " ".join(
-        context.args
-    )
+    product = " ".join(context.args)
 
     if not gemini_client:
-
         await update.message.reply_text(
             "❌ GEMINI_API_KEY tapılmadı."
         )
-
         return
 
+    # İstifadəçiyə gözləmə mesajı
+    wait_message = await update.message.reply_text(
+        "🔎 Məhsul analiz edilir...\n"
+        "🤖 AI məlumatları yoxlayır..."
+    )
+
     prompt = f"""
-Sən eBay dropshipping məhsul analiz köməkçisisən.
+Sən eBay dropshipping product research köməkçisisən.
 
 Məhsul:
 {product}
 
-Vacib:
-Məndə bu məhsul üçün avtomatik olaraq
-sold count, sell-through və real supplier qiyməti
-yoxdursa, bunları UYDURMA.
-
-Məhsulu bu formada analiz et:
+Məhsulu aşağıdakı formada analiz et:
 
 🔎 MƏHSUL ANALİZİ
 
@@ -1002,14 +998,22 @@ NƏTİCƏ:
 🟡 MAYBE
 🔴 NO-GO
 
-Əgər real rəqəmlər çatışmırsa,
-bunu açıq şəkildə bildir.
+VACİB QAYDALAR:
 
-Heç vaxt:
-- sold count uydurma
-- sell-through uydurma
-- real satış sayı uydurma
-- real supplier qiyməti uydurma
+- Real sold count verilməyibsə, sold count UYDURMA.
+- Sell-through rate verilməyibsə, UYDURMA.
+- Supplier qiyməti verilməyibsə, UYDURMA.
+- Real satış sayı verilməyibsə, UYDURMA.
+- Trend olduğu sübut edilməyibsə, trend olduğunu iddia etmə.
+- Listing sayını satış sayı kimi qəbul etmə.
+- Seller feedback-i satış sayı kimi qəbul etmə.
+- Məlumat çatışmırsa açıq şəkildə "məlumat yoxdur" yaz.
+- Məhsulun risklərini ayrıca qeyd et.
+- Nəticəni Azərbaycan dilində yaz.
+- Qısa, aydın və real analiz ver.
+
+İstifadəçiyə boş və ümumi cavab vermə.
+Məhsul haqqında verilən məlumat azdırsa, bunu dürüst şəkildə bildir.
 """
 
     try:
@@ -1021,13 +1025,34 @@ Heç vaxt:
 
         answer = (
             response.text
-            or "AI cavab qaytarmadı."
+            or "AI analiz qaytarmadı."
         )
 
-        await update.message.reply_text(
+        # Gözləmə mesajını sil
+        try:
+            await wait_message.delete()
+        except Exception:
+            pass
+
+        final_response = (
             "🔎 AI MƏHSUL ANALİZİ\n\n"
             + answer
         )
+
+        # Telegram limitinə görə böl
+        max_length = 3900
+
+        for i in range(
+            0,
+            len(final_response),
+            max_length
+        ):
+
+            await update.message.reply_text(
+                final_response[
+                    i:i + max_length
+                ]
+            )
 
     except Exception as error:
 
@@ -1035,6 +1060,11 @@ Heç vaxt:
             "Analyze error:",
             repr(error)
         )
+
+        try:
+            await wait_message.delete()
+        except Exception:
+            pass
 
         await update.message.reply_text(
             "❌ Analiz xətası:\n"
