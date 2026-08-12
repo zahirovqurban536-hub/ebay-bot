@@ -444,53 +444,207 @@ async def trend_command(
 
 def calculate_product_research_score(
     total_listings,
-    prices
+    prices,
+    sellers,
+    titles
 ):
     """
-    Yalnız real eBay Browse API məlumatlarından
-    sadə product research score hesablayır.
+    REAL eBay Browse API məlumatlarından
+    product research score hesablayır.
 
-    Sold count, sell-through və supplier qiyməti
-    olmadığı üçün bunları hesaba qatmır.
-    Seller feedback də score üçün istifadə edilmir.
+    Sold count və sell-through olmadığı üçün
+    bunları UYDURMUR.
     """
 
-    score = 50
+    score = 100
 
-    # Listing sayı
-    if total_listings < 500:
-        score += 15
+    breakdown = []
 
-    elif total_listings < 1500:
-        score += 8
+    # 1. LISTING RƏQABƏTİ
 
-    elif total_listings < 3000:
-        score -= 5
+    if total_listings <= 500:
+        competition_points = 0
+
+    elif total_listings <= 1500:
+        competition_points = 5
+
+    elif total_listings <= 3000:
+        competition_points = 12
+
+    elif total_listings <= 10000:
+        competition_points = 22
+
+    elif total_listings <= 20000:
+        competition_points = 30
 
     else:
-        score -= 15
+        competition_points = 38
 
-    # Qiymət məlumatı
+    score -= competition_points
+
+    breakdown.append(
+        f"Listing rəqabəti: -{competition_points}"
+    )
+
+    # 2. AŞAĞI QİYMƏT TƏZYİQİ
+
     if prices:
+
+        minimum = min(prices)
+
+        if minimum < 5:
+            low_price_penalty = 18
+
+        elif minimum < 10:
+            low_price_penalty = 12
+
+        elif minimum < 15:
+            low_price_penalty = 6
+
+        else:
+            low_price_penalty = 0
+
+        score -= low_price_penalty
+
+        breakdown.append(
+            f"Aşağı qiymət təzyiqi: -{low_price_penalty}"
+        )
+
+    # 3. QİYMƏT SABİTLİYİ
+
+    if prices and len(prices) >= 2:
 
         minimum = min(prices)
         maximum = max(prices)
 
         if minimum > 0:
 
-            price_range = maximum / minimum
+            price_ratio = maximum / minimum
 
-            if price_range < 3:
-                score += 10
+            if price_ratio <= 3:
+                price_penalty = 0
 
-            elif price_range > 10:
-                score -= 5
+            elif price_ratio <= 6:
+                price_penalty = 3
 
-    # 0-100 aralığında saxla
+            elif price_ratio <= 10:
+                price_penalty = 6
+
+            else:
+                price_penalty = 10
+
+            score -= price_penalty
+
+            breakdown.append(
+                f"Qiymət dəyişkənliyi: -{price_penalty}"
+            )
+
+    # 4. SELLER RƏQABƏTİ
+
+    valid_sellers = [
+        s for s in sellers
+        if isinstance(s, (int, float))
+        and s >= 0
+    ]
+
+    if valid_sellers:
+
+        strong_sellers = sum(
+            1
+            for s in valid_sellers
+            if s >= 10000
+        )
+
+        strong_ratio = (
+            strong_sellers / len(valid_sellers)
+        )
+
+        if strong_ratio >= 0.70:
+            seller_penalty = 12
+
+        elif strong_ratio >= 0.40:
+            seller_penalty = 8
+
+        elif strong_ratio >= 0.20:
+            seller_penalty = 4
+
+        else:
+            seller_penalty = 0
+
+        score -= seller_penalty
+
+        breakdown.append(
+            f"Güclü seller rəqabəti: -{seller_penalty}"
+        )
+
+    # 5. TƏKRARLANAN LISTINGLƏR
+
+    clean_titles = []
+
+    for title in titles:
+
+        if not title:
+            continue
+
+        normalized = (
+            " ".join(
+                str(title)
+                .lower()
+                .split()
+            )
+        )
+
+        if normalized:
+            clean_titles.append(normalized)
+
+    duplicate_penalty = 0
+
+    if clean_titles:
+
+        title_counts = {}
+
+        for title in clean_titles:
+
+            title_counts[title] = (
+                title_counts.get(title, 0) + 1
+            )
+
+        duplicate_count = sum(
+            count - 1
+            for count in title_counts.values()
+            if count > 1
+        )
+
+        duplicate_ratio = (
+            duplicate_count / len(clean_titles)
+        )
+
+        if duplicate_ratio >= 0.50:
+            duplicate_penalty = 10
+
+        elif duplicate_ratio >= 0.30:
+            duplicate_penalty = 7
+
+        elif duplicate_ratio >= 0.15:
+            duplicate_penalty = 4
+
+        elif duplicate_ratio >= 0.05:
+            duplicate_penalty = 2
+
+    score -= duplicate_penalty
+
+    breakdown.append(
+        f"Təkrarlanan listinglər: -{duplicate_penalty}"
+    )
+
+    # SCORE 0-100
+
     score = max(
         0,
-        min(100, score)
+        min(100, round(score))
     )
+
+    # QƏRAR
 
     if score >= 70:
         decision = "🟢 GO"
@@ -501,7 +655,23 @@ def calculate_product_research_score(
     else:
         decision = "🔴 NO-GO"
 
-    return score, decision
+    # DATA CONFIDENCE
+
+    if total_listings > 0 and prices:
+        data_confidence = "🟡 ORTA"
+
+    elif total_listings > 0:
+        data_confidence = "🟠 AŞAĞI"
+
+    else:
+        data_confidence = "🔴 ÇOX AŞAĞI"
+
+    return (
+        score,
+        decision,
+        data_confidence,
+        breakdown
+    )
 
 async def ebay_command(
     update: Update,
