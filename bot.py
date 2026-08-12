@@ -683,16 +683,16 @@ async def ebay_command(
             "⚠️ Format:\n\n"
             "/ebay calming pet bed\n\n"
             "və ya:\n"
-            "/ebay wireless phone holder"
+            "/ebay electric milk frother"
         )
         return
 
     keyword = " ".join(context.args)
 
     await update.message.reply_text(
-        "🔎 eBay US axtarılır...\n"
-        "🤖 Məhsullar analiz edilir...\n"
-        "Bir az gözlə..."
+        "🔎 REAL eBay US axtarılır...\n"
+        "🤖 Məhsul analiz edilir...\n"
+        "⏳ Bir az gözlə..."
     )
 
     try:
@@ -703,88 +703,98 @@ async def ebay_command(
 
         result = format_ebay_results(data)
 
-        # REAL eBAY MƏLUMATLARINDAN SCORE ÜÇÜN
-        total_listings = 0
+        # =================================================
+        # REAL EBAY DATA
+        # =================================================
+
+        total_listings = int(
+            data.get("total", 0) or 0
+        )
+
         prices = []
 
-        if isinstance(data, dict):
+        items = data.get(
+            "itemSummaries",
+            []
+        )
 
-            total_listings = int(
-                data.get("total", 0)
-                or data.get("totalListings", 0)
-                or 0
-            )
+        for item in items:
 
-            items = (
-                data.get("itemSummaries")
-                or data.get("items")
-                or data.get("results")
-                or []
-            )
+            price = item.get("price", {})
 
-            for item in items:
+            if isinstance(price, dict):
+                price = price.get("value")
 
-                price = item.get("price")
+            try:
+                if price is not None:
+                    prices.append(
+                        float(price)
+                    )
+            except (ValueError, TypeError):
+                pass
 
-                if isinstance(price, dict):
-                    price = price.get("value")
+        # =================================================
+        # PRODUCT SCORE
+        # =================================================
 
-                try:
-                    if price is not None:
-                        prices.append(
-                            float(price)
-                        )
-                except (ValueError, TypeError):
-                    pass
-
-        # SCORE HƏR HALDA HESABLANIR
         score, decision = calculate_product_research_score(
             total_listings,
             prices
         )
 
-        # AI ANALİZİ
+        # =================================================
+        # AI PRODUCT RESEARCH
+        # =================================================
+
         if gemini_client:
 
             analysis_prompt = f"""
-Sən eBay US dropshipping product research köməkçisisən.
+Sən peşəkar eBay US product research köməkçisisən.
 
-Axtarılan məhsul:
+Məhsul:
 {keyword}
 
-Aşağıdakı məlumatlar REAL eBay Browse API nəticələrindən gəlib:
+REAL eBay Browse API nəticələri:
 
 {result}
 
-Sistem tərəfindən real məlumatlardan hesablanan ilkin score:
+REAL SISTEM SCORE:
 {score}/100
 
-Sistem qərarı:
+SISTEM QƏRARI:
 {decision}
 
-VACİB QAYDALAR:
+ÇOX VACİB QAYDALAR:
 
-- Seller feedback-i satış sayı kimi qəbul etmə.
-- Sold count verilməyibsə sold count UYDURMA.
-- Sell-through rate UYDURMA.
-- Supplier qiyməti verilməyibsə supplier qiyməti UYDURMA.
-- Trend olduğunu dəqiq sübut edən məlumat yoxdursa bunu açıq yaz.
-- Yalnız verilən eBay məlumatlarından nəticə çıxar.
-- Çox bahalı və qeyri-adi qiymətləri ayrıca qeyd et.
-- Təkrarlanan və çox oxşar listingləri rəqabət göstəricisi kimi nəzərə al.
-- Sistem score-unu dəyişmə.
-- Satış sayı olmayan halda "çox satılır" demə.
-- Listing sayı tələbin dəqiq sübutu deyil.
-- Listing sayı ilə satış sayını qarışdırma.
+1. Yalnız verilən REAL eBay məlumatlarından istifadə et.
+2. Sold count məlumatı yoxdursa UYDURMA.
+3. Sell-through rate yoxdursa UYDURMA.
+4. Supplier qiyməti yoxdursa UYDURMA.
+5. Seller feedback-i satış sayı kimi göstərmə.
+6. Listing sayını satış sayı kimi göstərmə.
+7. Listing sayı yüksəkdirsə rəqabəti yüksək qiymətləndir.
+8. Çox oxşar/təkrarlanan məhsullar varsa bunu rəqabət kimi qeyd et.
+9. Çox ucuz rəqiblər varsa qiymət təzyiqini qeyd et.
+10. Çox bahalı outlier məhsullar varsa ayrıca qeyd et.
+11. Məhsulun elektrikli, batareyalı, kövrək və ya qaytarılma riski olan məhsul olub-olmadığını nəzərə al.
+12. Trend olduğunu sübut edən məlumat yoxdursa "Trend məlumatı yoxdur" yaz.
+13. Supplier qiyməti olmadığı halda profit hesablaması etmə.
+14. Sistem score-unu dəyişmə.
+15. Özündən rəqəm uydurma.
+16. "Çox satılır" kimi ifadə yalnız real satış datası varsa istifadə oluna bilər.
 
 Cavabı Azərbaycan dilində ver.
 
 FORMAT:
 
-🔥 EBAY PRODUCT RESEARCH
+🔥 REAL EBAY MƏHSUL ANALİZİ
 
 📦 Məhsul:
-🇺🇸 eBay nəticələri:
+{keyword}
+
+🇺🇸 eBay bazarı:
+
+- Listing sayı:
 
 💰 Qiymət:
 
@@ -793,14 +803,18 @@ FORMAT:
 - Orta:
 
 🏆 Rəqabət:
+🟢 Aşağı / 🟡 Orta / 🔴 Yüksək
 
 👥 Seller vəziyyəti:
 
 📈 Satış potensialı:
 
-⚠️ Vacib məlumat:
-Sold count və sell-through məlumatı yoxdursa
-açıq şəkildə "məlumat yoxdur" yaz.
+⚠️ Məlumat çatışmazlığı:
+
+- Sold count:
+- Sell-through:
+- Supplier qiyməti:
+- Trend:
 
 🎯 PRODUCT SCORE:
 {score}/100
@@ -809,13 +823,21 @@ NƏTİCƏ:
 {decision}
 
 💡 Qısa səbəb:
+
+📦 DROPSHIPPING ÜÇÜN ÜSTÜNLÜKLƏR:
+
+📦 DROPSHIPPING ÜÇÜN RİSKLƏR:
+
+Sonda məhsul üçün qısa və dürüst qərar ver.
 """
 
             try:
 
-                ai_response = gemini_client.models.generate_content(
-                    model="gemini-3.6-flash",
-                    contents=analysis_prompt
+                ai_response = (
+                    gemini_client.models.generate_content(
+                        model="gemini-3.6-flash",
+                        contents=analysis_prompt
+                    )
                 )
 
                 ai_answer = (
@@ -823,11 +845,7 @@ NƏTİCƏ:
                     or "AI analiz qaytarmadı."
                 )
 
-                final_response = (
-                    result
-                    + "\n\n"
-                    + ai_answer
-                )
+                final_response = ai_answer
 
             except Exception as ai_error:
 
@@ -852,7 +870,10 @@ NƏTİCƏ:
                 + f"📌 NƏTİCƏ: {decision}"
             )
 
-        # TELEGRAM MESAJ LİMİTİ
+        # =================================================
+        # TELEGRAM MESAJ LIMITI
+        # =================================================
+
         max_length = 3900
 
         for i in range(
@@ -860,6 +881,7 @@ NƏTİCƏ:
             len(final_response),
             max_length
         ):
+
             await update.message.reply_text(
                 final_response[
                     i:i + max_length
@@ -867,16 +889,6 @@ NƏTİCƏ:
             )
 
     except Exception as error:
-
-        print(
-            "eBay error:",
-            repr(error)
-        )
-
-        await update.message.reply_text(
-            "❌ eBay API xətası.\n\n"
-            + str(error)[:1200]
-        )
 
         print(
             "eBay error:",
