@@ -730,31 +730,29 @@ async def profit_command(
     args = context.args
 
     if len(args) < 2:
-
         await update.message.reply_text(
-            "⚠️ Format:\n"
+            "⚠️ Format:\n\n"
             "/profit <alış> <satış> [shipping]\n\n"
             "Misal:\n"
             "/profit 12 29.99 5"
         )
-
         return
 
     try:
-
-        supplier_price = float(
-            args[0]
-        )
-
-        ebay_price = float(
-            args[1]
-        )
+        supplier_price = float(args[0])
+        ebay_price = float(args[1])
 
         shipping_cost = (
             float(args[2])
             if len(args) >= 3
             else 0.0
         )
+
+        if supplier_price < 0 or ebay_price < 0 or shipping_cost < 0:
+            await update.message.reply_text(
+                "❌ Qiymətlər mənfi ola bilməz."
+            )
+            return
 
         (
             total_fees,
@@ -770,6 +768,8 @@ async def profit_command(
 
         if net_profit > 0:
             status = "🟢 GO"
+        elif net_profit == 0:
+            status = "🟡 BREAK-EVEN"
         else:
             status = "🔴 NO-GO"
 
@@ -778,18 +778,21 @@ async def profit_command(
             f"🛒 Supplier: ${supplier_price:.2f}\n"
             f"🏷 eBay satış: ${ebay_price:.2f}\n"
             f"🚚 Shipping: ${shipping_cost:.2f}\n\n"
+
             "💸 eBay xərcləri:\n"
             f"• Final Value Fee: "
             f"${final_value_fee:.2f}\n"
             f"• Fixed Fee: "
             f"${fixed_fee:.2f}\n"
-            f"• Cəmi: "
+            f"• Cəmi eBay xərci: "
             f"${total_fees:.2f}\n\n"
+
             f"💰 Xalis profit: "
             f"${net_profit:.2f}\n"
-            f"📈 Marja: "
+            f"📈 Profit marjası: "
             f"{margin:.2f}%\n\n"
-            f"Nəticə: {status}"
+
+            f"🎯 Nəticə: {status}"
         )
 
         await update.message.reply_text(
@@ -797,13 +800,11 @@ async def profit_command(
         )
 
     except ValueError:
-
         await update.message.reply_text(
             "❌ Qiymətləri rəqəmlə yaz.\n\n"
             "Misal:\n"
             "/profit 12 29.99 5"
         )
-
 
 # =========================================================
 # TITLE
