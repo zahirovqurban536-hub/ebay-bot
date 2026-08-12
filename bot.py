@@ -1,1220 +1,186 @@
 import os
 import re
 import base64
-from statistics import mean, median
-from threading import Thread
-from typing import Any
+import math
+import statistics
+import time
+from collections import Counter
+from threading import Thread, Lock
+from typing import Any, Optional
 
 import requests
 from flask import Flask
 from google import genai
-
 from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-)
-
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ============================================================
 # CONFIG
 # ============================================================
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-EBAY_CLIENT_ID = os.environ.get("EBAY_CLIENT_ID")
-EBAY_CLIENT_SECRET = os.environ.get("EBAY_CLIENT_SECRET")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+EBAY_CLIENT_ID = os.environ.get("EBAY_CLIENT_ID", "").strip()
+EBAY_CLIENT_SECRET = os.environ.get("EBAY_CLIENT_SECRET", "").strip()
 
-# Officially available Gemini model
-GEMINI_MODEL = "gemini-3.6-flash"
+# Gemini 3.6 Flash is a current stable production model.
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
 EBAY_MARKETPLACE = "EBAY_US"
-
-MAX_TELEGRAM_LENGTH = 3900
 EBAY_TIMEOUT = 30
+MAX_TELEGRAM_LENGTH = 3900
+EBAY_SAMPLE_LIMIT = min(max(int(os.environ.get("EBAY_SAMPLE_LIMIT", "50")), 10), 50)
+
+# Research estimate only. Change in Render Environment if your account/category differs.
+EBAY_FEE_RATE = float(os.environ.get("EBAY_FEE_RATE", "0.1325"))
+EBAY_FIXED_FEE = float(os.environ.get("EBAY_FIXED_FEE", "0.30"))
 
 app = Flask(__name__)
+gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-gemini_client = None
-
-if GEMINI_API_KEY:
-    gemini_client = genai.Client(
-        api_key=GEMINI_API_KEY
-    )
-
+_token_cache = {"token": None, "expires_at": 0.0}
+_token_lock = Lock()
 
 # ============================================================
 # GENERAL HELPERS
 # ============================================================
 
 def clean_text(value: Any, default: str = "") -> str:
-    if value is None:
-        return default
-
-    return str(value).strip()
+    return default if value is None else str(value).strip()
 
 
-def safe_float(value: Any):
+def safe_float(value: Any) -> Optional[float]:
     try:
         return float(value)
     except (TypeError, ValueError):
         return None
 
 
-def split_telegram_text(
-    text: str,
-    max_length: int = MAX_TELEGRAM_LENGTH
-):
+def money(value: Optional[float]) -> str:
+    return "N/A" if value is None else f"${value:,.2f}"
+
+
+def normalize_title(title: str) -> str:
+    text = clean_text(title).lower()
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return " ".join(text.split())
+
+
+def percentile(values, p):
+    values = sorted(v for v in values if isinstance(v, (int, float)))
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+    k = (len(values) - 1) * (p / 100)
+    f, c = math.floor(k), math.ceil(k)
+    if f == c:
+        return values[int(k)]
+    return values[f] + (values[c] - values[f]) * (k - f)
+
+
+def trimmed_values(values):
+    if len(values) < 8:
+        return list(values)
+    lo = percentile(values, 5)
+    hi = percentile(values, 95)
+    return [v for v in values if lo <= v <= hi]
+
+
+def split_telegram_text(text: str):
     if not text:
         return [""]
-
     chunks = []
     remaining = str(text)
 
-    while len(remaining) > max_length:
-
-        cut = remaining.rfind(
-            "\n",
-            0,
-            max_length
-        )
-
-        if cut < int(max_length * 0.60):
-            cut = remaining.rfind(
-                " ",
-                0,
-                max_length
-            )
-
-        if cut < int(max_length * 0.60):
-            cut = max_length
-
-        chunks.append(
-            remaining[:cut].strip()
-        )
-
+    while len(remaining) > MAX_TELEGRAM_LENGTH:
+        cut = remaining.rfind("\n", 0, MAX_TELEGRAM_LENGTH)
+        if cut < int(MAX_TELEGRAM_LENGTH * 0.60):
+            cut = remaining.rfind(" ", 0, MAX_TELEGRAM_LENGTH)
+        if cut < int(MAX_TELEGRAM_LENGTH * 0.60):
+            cut = MAX_TELEGRAM_LENGTH
+        chunks.append(remaining[:cut].strip())
         remaining = remaining[cut:].strip()
 
     if remaining:
         chunks.append(remaining)
-
     return chunks
 
 
-async def send_long_message(
-    update: Update,
-    text: str
-):
+async def send_long_message(update: Update, text: str):
     for chunk in split_telegram_text(text):
         await update.message.reply_text(chunk)
 
 
-def money(value):
-    if value is None:
-        return "N/A"
-
-    return f"${value:,.2f}"
-
-
 # ============================================================
-# GEMINI
+# GEMINI AI BRAIN
 # ============================================================
 
 def ask_ai(prompt: str) -> str:
-
     if not gemini_client:
-        raise RuntimeError(
-            "GEMINI_API_KEY tapılmadı."
-        )
+        raise RuntimeError("GEMINI_API_KEY tapılmadı.")
 
     response = gemini_client.models.generate_content(
         model=GEMINI_MODEL,
         contents=prompt,
     )
-
-    answer = clean_text(
-        getattr(response, "text", ""),
-        ""
-    )
-
+    answer = clean_text(getattr(response, "text", ""))
     if not answer:
-        raise RuntimeError(
-            "Gemini boş cavab qaytardı."
-        )
-
+        raise RuntimeError("Gemini boş cavab qaytardı.")
     return answer
 
 
-# ============================================================
-# EBAY OAUTH
-# ============================================================
-
-def get_ebay_application_token():
-
-    if not EBAY_CLIENT_ID:
-        raise RuntimeError(
-            "EBAY_CLIENT_ID yoxdur."
-        )
-
-    if not EBAY_CLIENT_SECRET:
-        raise RuntimeError(
-            "EBAY_CLIENT_SECRET yoxdur."
-        )
-
-    credentials = (
-        f"{EBAY_CLIENT_ID}:{EBAY_CLIENT_SECRET}"
-    )
-
-    encoded_credentials = base64.b64encode(
-        credentials.encode("utf-8")
-    ).decode("utf-8")
-
-    headers = {
-        "Content-Type":
-            "application/x-www-form-urlencoded",
-        "Authorization":
-            f"Basic {encoded_credentials}",
-    }
-
-    data = {
-        "grant_type":
-            "client_credentials",
-
-        "scope":
-            "https://api.ebay.com/oauth/api_scope",
-    }
-
-    response = requests.post(
-        "https://api.ebay.com/identity/v1/oauth2/token",
-        headers=headers,
-        data=data,
-        timeout=EBAY_TIMEOUT,
-    )
-
-    if response.status_code != 200:
-
-        raise RuntimeError(
-            "eBay OAuth xətası: "
-            f"{response.status_code}\n"
-            f"{response.text[:1000]}"
-        )
-
-    result = response.json()
-
-    token = result.get(
-        "access_token"
-    )
-
-    if not token:
-        raise RuntimeError(
-            "eBay access token alınmadı."
-        )
-
-    return token
-
-
-# ============================================================
-# REAL EBAY SEARCH
-# ============================================================
-
-def ebay_search_products(
+def ai_product_brain(
     keyword: str,
-    limit: int = 50
-):
+    report: str,
+    score: int,
+    decision: str,
+    confidence: str,
+    supplier_price: Optional[float] = None,
+) -> str:
 
-    token = get_ebay_application_token()
-
-    headers = {
-        "Authorization":
-            f"Bearer {token}",
-
-        "Content-Type":
-            "application/json",
-
-        "X-EBAY-C-MARKETPLACE-ID":
-            EBAY_MARKETPLACE,
-    }
-
-    params = {
-        "q": keyword,
-        "limit": min(
-            max(limit, 1),
-            50
-        ),
-    }
-
-    response = requests.get(
-        "https://api.ebay.com/buy/browse/v1/item_summary/search",
-        headers=headers,
-        params=params,
-        timeout=EBAY_TIMEOUT,
+    supplier_info = (
+        f"Supplier qiyməti: {money(supplier_price)}"
+        if supplier_price is not None
+        else "Supplier qiyməti: VERİLMƏYİB"
     )
 
-    if response.status_code != 200:
+    prompt = f"""
+Sən eBay US dropshipping üçün peşəkar product-research AI beynisən.
 
-        raise RuntimeError(
-            "eBay Search xətası: "
-            f"{response.status_code}\n"
-            f"{response.text[:1200]}"
-        )
-
-    return response.json()
-
-
-# ============================================================
-# EXTRACT REAL EBAY DATA
-# ============================================================
-
-def extract_ebay_data(data):
-
-    items = data.get(
-        "itemSummaries"
-    ) or []
-
-    total = safe_float(
-        data.get("total")
-    ) or 0
-
-    total = int(total)
-
-    prices = []
-    sellers = []
-    titles = []
-    locations = []
-
-    shipping_prices = []
-
-    condition_counts = {}
-
-    real_items = []
-
-    for item in items:
-
-        if not isinstance(
-            item,
-            dict
-        ):
-            continue
-
-        # ----------------------------------------------------
-        # TITLE
-        # ----------------------------------------------------
-
-        title = clean_text(
-            item.get("title")
-        )
-
-        if title:
-            titles.append(title)
-
-        # ----------------------------------------------------
-        # PRICE
-        # ----------------------------------------------------
-
-        price_data = (
-            item.get("price")
-            or {}
-        )
-
-        if isinstance(
-            price_data,
-            dict
-        ):
-            price = safe_float(
-                price_data.get("value")
-            )
-
-            currency = clean_text(
-                price_data.get(
-                    "currency"
-                ),
-                "USD"
-            )
-        else:
-            price = safe_float(
-                price_data
-            )
-
-            currency = "USD"
-
-        if (
-            price is not None
-            and price >= 0
-        ):
-            prices.append(price)
-
-        # ----------------------------------------------------
-        # SELLER
-        # ----------------------------------------------------
-
-        seller = (
-            item.get("seller")
-            or {}
-        )
-
-        feedback = None
-        feedback_percentage = None
-
-        if isinstance(
-            seller,
-            dict
-        ):
-
-            feedback = safe_float(
-                seller.get(
-                    "feedbackScore"
-                )
-            )
-
-            feedback_percentage = (
-                seller.get(
-                    "feedbackPercentage"
-                )
-            )
-
-        if feedback is not None:
-            sellers.append(
-                feedback
-            )
-
-        # ----------------------------------------------------
-        # LOCATION
-        # ----------------------------------------------------
-
-        location = (
-            item.get("itemLocation")
-            or {}
-        )
-
-        location_text = ""
-
-        if isinstance(
-            location,
-            dict
-        ):
-
-            city = clean_text(
-                location.get("city")
-            )
-
-            state = clean_text(
-                location.get("stateOrProvince")
-            )
-
-            country = clean_text(
-                location.get("country")
-            )
-
-            location_text = ", ".join(
-                x
-                for x in [
-                    city,
-                    state,
-                    country
-                ]
-                if x
-            )
-
-            if location_text:
-                locations.append(
-                    location_text
-                )
-
-        # ----------------------------------------------------
-        # CONDITION
-        # ----------------------------------------------------
-
-        condition = clean_text(
-            item.get(
-                "condition"
-            ),
-            "Unknown"
-        )
-
-        condition_counts[
-            condition
-        ] = condition_counts.get(
-            condition,
-            0
-        ) + 1
-
-        # ----------------------------------------------------
-        # SHIPPING
-        # ----------------------------------------------------
-
-        shipping_options = (
-            item.get(
-                "shippingOptions"
-            )
-            or []
-        )
-
-        shipping_value = None
-
-        if shipping_options:
-
-            first_shipping = (
-                shipping_options[0]
-            )
-
-            if isinstance(
-                first_shipping,
-                dict
-            ):
-
-                shipping_cost = (
-                    first_shipping.get(
-                        "shippingCost"
-                    )
-                    or {}
-                )
-
-                if isinstance(
-                    shipping_cost,
-                    dict
-                ):
-
-                    shipping_value = (
-                        safe_float(
-                            shipping_cost.get(
-                                "value"
-                            )
-                        )
-                    )
-
-        if shipping_value is not None:
-
-            shipping_prices.append(
-                shipping_value
-            )
-
-        # ----------------------------------------------------
-        # SAVE REAL ITEM
-        # ----------------------------------------------------
-
-        real_items.append(
-            {
-                "title": title,
-                "price": price,
-                "currency": currency,
-                "seller_feedback": feedback,
-                "seller_feedback_percentage":
-                    feedback_percentage,
-                "location":
-                    location_text,
-                "condition":
-                    condition,
-                "shipping":
-                    shipping_value,
-                "item_id":
-                    clean_text(
-                        item.get(
-                            "itemId"
-                        )
-                    ),
-            }
-        )
-
-    return {
-        "total_listings":
-            total,
-
-        "prices":
-            prices,
-
-        "sellers":
-            sellers,
-
-        "titles":
-            titles,
-
-        "locations":
-            locations,
-
-        "shipping_prices":
-            shipping_prices,
-
-        "condition_counts":
-            condition_counts,
-
-        "items":
-            real_items,
-    }
-
-
-# ============================================================
-# DETERMINISTIC SCORE
-# ============================================================
-
-def calculate_product_score(
-    total_listings,
-    prices,
-    sellers,
-    titles
-):
-
-    score = 100
-
-    reasons = []
-
-    # --------------------------------------------------------
-    # LISTING COMPETITION
-    # --------------------------------------------------------
-
-    if total_listings <= 500:
-
-        penalty = 0
-
-    elif total_listings <= 1500:
-
-        penalty = 8
-
-    elif total_listings <= 3000:
-
-        penalty = 15
-
-    elif total_listings <= 10000:
-
-        penalty = 25
-
-    elif total_listings <= 20000:
-
-        penalty = 32
-
-    else:
-
-        penalty = 40
-
-    score -= penalty
-
-    reasons.append(
-        f"Listing rəqabəti: -{penalty}"
-    )
-
-    # --------------------------------------------------------
-    # LOW PRICE PRESSURE
-    # --------------------------------------------------------
-
-    if prices:
-
-        minimum = min(prices)
-
-        if minimum < 5:
-
-            penalty = 18
-
-        elif minimum < 10:
-
-            penalty = 13
-
-        elif minimum < 15:
-
-            penalty = 7
-
-        elif minimum < 20:
-
-            penalty = 3
-
-        else:
-
-            penalty = 0
-
-        score -= penalty
-
-        reasons.append(
-            f"Aşağı qiymət təzyiqi: -{penalty}"
-        )
-
-    # --------------------------------------------------------
-    # SELLER POWER
-    # --------------------------------------------------------
-
-    valid_sellers = [
-        s
-        for s in sellers
-        if isinstance(
-            s,
-            (int, float)
-        )
-    ]
-
-    if valid_sellers:
-
-        very_large = sum(
-            1
-            for s in valid_sellers
-            if s >= 10000
-        )
-
-        large_ratio = (
-            very_large /
-            len(valid_sellers)
-        )
-
-        if large_ratio >= 0.70:
-
-            penalty = 12
-
-        elif large_ratio >= 0.40:
-
-            penalty = 8
-
-        elif large_ratio >= 0.20:
-
-            penalty = 4
-
-        else:
-
-            penalty = 0
-
-        score -= penalty
-
-        reasons.append(
-            f"Güclü seller rəqabəti: -{penalty}"
-        )
-
-    # --------------------------------------------------------
-    # TITLE DUPLICATION
-    # --------------------------------------------------------
-
-    normalized = []
-
-    for title in titles:
-
-        value = " ".join(
-            title.lower().split()
-        )
-
-        if value:
-            normalized.append(
-                value
-            )
-
-    if normalized:
-
-        counts = {}
-
-        for title in normalized:
-
-            counts[title] = (
-                counts.get(
-                    title,
-                    0
-                ) + 1
-            )
-
-        duplicates = sum(
-            count - 1
-            for count in counts.values()
-            if count > 1
-        )
-
-        duplicate_ratio = (
-            duplicates /
-            len(normalized)
-        )
-
-        if duplicate_ratio >= 0.50:
-
-            penalty = 10
-
-        elif duplicate_ratio >= 0.30:
-
-            penalty = 7
-
-        elif duplicate_ratio >= 0.15:
-
-            penalty = 4
-
-        elif duplicate_ratio >= 0.05:
-
-            penalty = 2
-
-        else:
-
-            penalty = 0
-
-        score -= penalty
-
-        reasons.append(
-            f"Oxşar/təkrarlanan başlıqlar: -{penalty}"
-        )
-
-    # --------------------------------------------------------
-    # FINAL
-    # --------------------------------------------------------
-
-    score = max(
-        0,
-        min(
-            100,
-            round(score)
-        )
-    )
-
-    if score >= 70:
-
-        decision = "🟢 GO"
-
-    elif score >= 50:
-
-        decision = "🟡 MAYBE"
-
-    else:
-
-        decision = "🔴 NO-GO"
-
-    return (
-        score,
-        decision,
-        reasons
-    )
-
-
-# ============================================================
-# REAL EBAY REPORT
-# ============================================================
-
-def build_real_ebay_report(
-    keyword,
-    extracted
-):
-
-    total = extracted[
-        "total_listings"
-    ]
-
-    prices = extracted[
-        "prices"
-    ]
-
-    sellers = extracted[
-        "sellers"
-    ]
-
-    items = extracted[
-        "items"
-    ]
-
-    lines = []
-
-    lines.append(
-        "🔎 REAL EBAY US DATA"
-    )
-
-    lines.append("")
-
-    lines.append(
-        f"🔍 Search keyword: {keyword}"
-    )
-
-    lines.append(
-        f"📦 eBay result count: {total:,}"
-    )
-
-    lines.append(
-        f"📊 API sample analyzed: {len(items)} listings"
-    )
-
-    lines.append("")
-
-    # --------------------------------------------------------
-    # PRICE DATA
-    # --------------------------------------------------------
-
-    if prices:
-
-        lines.append(
-            "💰 REAL PRICE DATA"
-        )
-
-        lines.append(
-            f"• Minimum: {money(min(prices))}"
-        )
-
-        lines.append(
-            f"• Maximum: {money(max(prices))}"
-        )
-
-        lines.append(
-            f"• Average of sample: {money(mean(prices))}"
-        )
-
-        lines.append(
-            f"• Median of sample: {money(median(prices))}"
-        )
-
-        lines.append(
-            "• Bu average/median yalnız API-dən alınan "
-            f"{len(prices)} qiymət üzərində hesablanıb."
-        )
-
-    else:
-
-        lines.append(
-            "💰 Price data: tapılmadı."
-        )
-
-    lines.append("")
-
-    # --------------------------------------------------------
-    # SELLER DATA
-    # --------------------------------------------------------
-
-    if sellers:
-
-        lines.append(
-            "👥 REAL SELLER DATA"
-        )
-
-        lines.append(
-            f"• Seller feedback sample: {len(sellers)}"
-        )
-
-        lines.append(
-            f"• Minimum feedback: {int(min(sellers)):,}"
-        )
-
-        lines.append(
-            f"• Maximum feedback: {int(max(sellers)):,}"
-        )
-
-        strong = sum(
-            1
-            for s in sellers
-            if s >= 10000
-        )
-
-        lines.append(
-            f"• 10,000+ feedback sellers: {strong}"
-        )
-
-    else:
-
-        lines.append(
-            "👥 Seller data: tapılmadı."
-        )
-
-    lines.append("")
-
-    # --------------------------------------------------------
-    # CONDITION
-    # --------------------------------------------------------
-
-    condition_counts = (
-        extracted[
-            "condition_counts"
-        ]
-    )
-
-    if condition_counts:
-
-        lines.append(
-            "📦 CONDITION DATA"
-        )
-
-        for condition, count in (
-            condition_counts.items()
-        ):
-
-            lines.append(
-                f"• {condition}: {count}"
-            )
-
-        lines.append("")
-
-    # --------------------------------------------------------
-    # SHIPPING
-    # --------------------------------------------------------
-
-    shipping = extracted[
-        "shipping_prices"
-    ]
-
-    if shipping:
-
-        lines.append(
-            "🚚 SHIPPING DATA"
-        )
-
-        lines.append(
-            f"• Minimum sample shipping: "
-            f"{money(min(shipping))}"
-        )
-
-        lines.append(
-            f"• Maximum sample shipping: "
-            f"{money(max(shipping))}"
-        )
-
-        lines.append("")
-
-    # --------------------------------------------------------
-    # REAL LISTINGS
-    # --------------------------------------------------------
-
-    lines.append(
-        "📋 REAL SAMPLE LISTINGS"
-    )
-
-    lines.append("")
-
-    for index, item in enumerate(
-        items[:15],
-        1
-    ):
-
-        lines.append(
-            f"{index}. {item['title']}"
-        )
-
-        lines.append(
-            f"   💵 Price: "
-            f"{money(item['price'])} "
-            f"{item['currency']}"
-        )
-
-        feedback = (
-            item[
-                "seller_feedback"
-            ]
-        )
-
-        feedback_percentage = (
-            item[
-                "seller_feedback_percentage"
-            ]
-        )
-
-        if feedback is not None:
-
-            lines.append(
-                f"   👤 Seller feedback: "
-                f"{int(feedback):,}"
-            )
-
-        if feedback_percentage:
-
-            lines.append(
-                f"   ⭐ Feedback %: "
-                f"{feedback_percentage}"
-            )
-
-        if item["location"]:
-
-            lines.append(
-                f"   📍 Location: "
-                f"{item['location']}"
-            )
-
-        if item["shipping"] is not None:
-
-            lines.append(
-                f"   🚚 Shipping: "
-                f"{money(item['shipping'])}"
-            )
-
-        lines.append(
-            f"   📦 Condition: "
-            f"{item['condition']}"
-        )
-
-        lines.append("")
-
-    # --------------------------------------------------------
-    # IMPORTANT DATA LIMITATION
-    # --------------------------------------------------------
-
-    lines.append(
-        "⚠️ DATA LIMITATIONS"
-    )
-
-    lines.append(
-        "• Browse API bu axtarış nəticəsində sold count vermir."
-    )
-
-    lines.append(
-        "• Browse API bu nəticədə sell-through rate vermir."
-    )
-
-    lines.append(
-        "• Supplier qiyməti eBay məlumatı deyil və "
-        "bu bot onu uydurmur."
-    )
-
-    lines.append(
-        "• Trend/viral status bu API nəticəsindən "
-        "avtomatik təsdiqlənmir."
-    )
-
-    return "\n".join(lines)
-
-
-# ============================================================
-# AI PRODUCT ANALYSIS
-# ============================================================
-
-def ai_product_analysis(
-    keyword,
-    extracted,
-    score,
-    decision
-):
-
-    total = extracted[
-        "total_listings"
-    ]
-
-    prices = extracted[
-        "prices"
-    ]
-
-    sellers = extracted[
-        "sellers"
-    ]
-
-    items = extracted[
-        "items"
-    ]
-
-    if prices:
-
-        minimum = min(prices)
-        maximum = max(prices)
-        average = mean(prices)
-        median_price = median(prices)
-
-    else:
-
-        minimum = None
-        maximum = None
-        average = None
-        median_price = None
-
-    if sellers:
-
-        max_feedback = max(
-            sellers
-        )
-
-        strong_sellers = sum(
-            1
-            for s in sellers
-            if s >= 10000
-        )
-
-    else:
-
-        max_feedback = None
-        strong_sellers = 0
-
-    sample_titles = [
-        item["title"]
-        for item in items[:20]
-        if item["title"]
-    ]
-
-    real_data = f"""
-REAL EBAY US DATA:
-
-Product:
+MƏHSUL:
 {keyword}
 
-Total eBay search result count:
-{total}
-
-API listings analyzed:
-{len(items)}
-
-Minimum observed price:
-{minimum}
-
-Maximum observed price:
-{maximum}
-
-Average observed price:
-{average}
-
-Median observed price:
-{median_price}
-
-Seller feedback sample:
-{len(sellers)}
-
-Maximum seller feedback:
-{max_feedback}
-
-Sellers with 10,000+ feedback:
-{strong_sellers}
-
-Real listing titles:
-{sample_titles}
+REAL EBAY BROWSE API DATA:
+{report}
 
 SYSTEM SCORE:
 {score}/100
 
 SYSTEM DECISION:
 {decision}
-"""
 
-    prompt = f"""
-Sən eBay US dropshipping product-research AI-sən.
+DATA CONFIDENCE:
+{confidence}
 
-Aşağıdakı məlumatlar REAL eBay Browse API-dən
-götürülüb.
+{supplier_info}
 
-Sənin vəzifən həmin məlumatları şərh etməkdir.
-
-{real_data}
-
-ÇOX VACİB QAYDALAR:
-
-1. YALNIZ yuxarıdakı real məlumatlardan istifadə et.
-
-2. Listing count = satış sayı DEYİL.
-
-3. Seller feedback = həmin məhsulun satış sayı DEYİL.
-
-4. Sold count verilməyib.
-Heç bir sold count rəqəmi yazma.
-
-5. Sell-through rate verilməyib.
-Heç bir sell-through rəqəmi yazma.
-
-6. Supplier qiyməti verilməyib.
-AliExpress, CJ, Amazon və başqa supplier qiyməti
-özündən yazma.
-
-7. Mənfəət rəqəmi hesablama.
-Supplier qiyməti olmadığı üçün dəqiq profit mümkün deyil.
-
-8. "Viral", "trend", "hot product", "best seller"
-kimi ifadələri fakt kimi istifadə etmə.
-
-9. Yüksək listing count varsa bunu yalnız
-YÜKSƏK TƏKLİF/RƏQABƏT siqnalı kimi izah et.
-
-10. Aşağı qiymət çoxdursa qiymət təzyiqini izah et.
-
-11. 10,000+ seller feedback çoxdursa,
-güclü satıcı rəqabəti kimi izah et.
-
-12. Məhsulun batareyalı olması, elektrikli olması,
-kövrək olması və s. yalnız məhsul adından açıq görünürsə
-risk kimi qeyd et.
-
-13. Məhsulun keyfiyyəti haqqında real review datası
-verilməyibsə iddia etmə.
-
-14. SYSTEM SCORE və SYSTEM DECISION dəyişdirilməməlidir.
-
-15. Əgər məlumat kifayət etmirsə açıq şəkildə:
-"Data çatışmır" yaz.
-
-16. Heç bir statistika uydurma.
-
-Cavab Azərbaycan dilində olsun.
+QƏTİ QAYDALAR:
+- Listing sayı satış sayı deyil.
+- Seller feedback satış sayı deyil.
+- Sold count yoxdursa uydurma.
+- Sell-through yoxdursa uydurma.
+- Supplier qiyməti yoxdursa profit rəqəmi uydurma.
+- Trend/viral status API-də yoxdursa fakt kimi yazma.
+- $100 kimi outlier qiyməti normal bazar qiyməti kimi qəbul etmə.
+- Median və qiymət sıxlığını əsas götür.
+- Böyük seller-ləri feedback datası ilə əsaslandır.
+- US item-location payını nəzərə al.
+- Təkrarlanan/oxşar title-ları saturation siqnalı kimi qiymətləndir.
+- System score-u və qərarı dəyişmə.
+- Faktla ehtimalı ayır.
+- Azərbaycan dilində yaz.
+- Lazımsız ümumi məsləhət vermə.
 
 FORMAT:
 
@@ -1224,42 +190,34 @@ FORMAT:
 {keyword}
 
 🇺🇸 REAL EBAY BAZARI
-
-- eBay nəticə sayı:
-- Analiz edilən real listing:
-- Minimum qiymət:
-- Maksimum qiymət:
-- Sample average:
-- Sample median:
+- Listing sayı:
+- API sample:
+- Normal qiymət zonası:
+- Median:
+- US location payı:
+- Free shipping payı:
 
 🏆 RƏQABƏT
-
 - Səviyyə:
-- Səbəb:
+- Əsas səbəb:
+- Böyük seller rəqabəti:
 
 💰 QİYMƏT STRATEGİYASI
-
-- Real müşahidə olunan qiymət aralığı:
+- Median bazar qiyməti:
 - Aşağı qiymət təzyiqi:
-- Qiymət barədə nəticə:
-
-👥 SELLER MÜHİTİ
-
-- Seller feedback:
-- Güclü seller rəqabəti:
+- Outlier:
+- Realistic test price:
 
 📈 SATIŞ POTENSİALI
-
-- Sold count:
-- Sell-through:
-- Nəticə:
+Sold count/sell-through yoxdursa bunu açıq yaz.
+Yalnız mövcud bazar siqnallarına əsaslan.
 
 ⚠️ RİSKLƏR
-
-- Data riski:
-- Rəqabət riski:
-- Qiymət riski:
-- Məhsul riski:
+- Rəqabət:
+- Qiymət:
+- Shipping:
+- Məhsul tipi:
+- Data çatışmazlığı:
 
 🎯 PRODUCT SCORE:
 {score}/100
@@ -1268,893 +226,849 @@ FORMAT:
 {decision}
 
 💡 SON FİKİR:
-
-Məhsulun eBay US dropshipping üçün
-araşdırmağa dəyib-dəymədiyini real API datasına
-əsasən qısa şəkildə izah et.
-
-Əgər satış datası yoxdursa bunu açıq bildir.
+3-5 konkret cümlə ilə qərarı izah et.
 """
-
     return ask_ai(prompt)
 
 
 # ============================================================
-# FULL PRODUCT RESEARCH
+# EBAY OAUTH
 # ============================================================
 
-def perform_product_research(
-    keyword,
-    limit=50
-):
+def get_ebay_application_token() -> str:
+    if not EBAY_CLIENT_ID or not EBAY_CLIENT_SECRET:
+        raise RuntimeError("EBAY_CLIENT_ID və ya EBAY_CLIENT_SECRET yoxdur.")
 
-    data = ebay_search_products(
-        keyword,
-        limit=limit
+    now = time.time()
+
+    with _token_lock:
+        if _token_cache["token"] and now < _token_cache["expires_at"]:
+            return _token_cache["token"]
+
+        credentials = f"{EBAY_CLIENT_ID}:{EBAY_CLIENT_SECRET}"
+        encoded = base64.b64encode(credentials.encode()).decode()
+
+        response = requests.post(
+            "https://api.ebay.com/identity/v1/oauth2/token",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Authorization": f"Basic {encoded}",
+            },
+            data={
+                "grant_type": "client_credentials",
+                "scope": "https://api.ebay.com/oauth/api_scope",
+            },
+            timeout=EBAY_TIMEOUT,
+        )
+
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"eBay OAuth xətası: {response.status_code} "
+                f"{response.text[:700]}"
+            )
+
+        result = response.json()
+        token = result.get("access_token")
+        expires_in = safe_float(result.get("expires_in")) or 7200
+
+        if not token:
+            raise RuntimeError("eBay access token alınmadı.")
+
+        _token_cache["token"] = token
+        _token_cache["expires_at"] = time.time() + max(60, expires_in - 120)
+        return token
+
+
+# ============================================================
+# EBAY SEARCH
+# ============================================================
+
+def ebay_search_products(keyword: str) -> dict:
+    token = get_ebay_application_token()
+
+    response = requests.get(
+        "https://api.ebay.com/buy/browse/v1/item_summary/search",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "X-EBAY-C-MARKETPLACE-ID": EBAY_MARKETPLACE,
+        },
+        params={
+            "q": keyword,
+            "limit": EBAY_SAMPLE_LIMIT,
+            "fieldgroups": "EXTENDED",
+        },
+        timeout=EBAY_TIMEOUT,
     )
 
-    extracted = extract_ebay_data(
-        data
-    )
-
-    if not extracted["items"]:
-
+    if response.status_code != 200:
         raise RuntimeError(
-            "eBay-də bu axtarış üçün "
-            "listing tapılmadı."
+            f"eBay Search xətası: {response.status_code} "
+            f"{response.text[:900]}"
         )
 
-    score, decision, reasons = (
-        calculate_product_score(
-            extracted[
-                "total_listings"
-            ],
-            extracted[
-                "prices"
-            ],
-            extracted[
-                "sellers"
-            ],
-            extracted[
-                "titles"
-            ],
-        )
-    )
-
-    return (
-        extracted,
-        score,
-        decision,
-        reasons
-    )
+    return response.json()
 
 
 # ============================================================
-# START
+# EBAY DATA EXTRACTION
 # ============================================================
 
-async def start_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+def extract_ebay_data(data: dict) -> dict:
+    items = data.get("itemSummaries") or []
+    total = int(safe_float(data.get("total")) or 0)
 
-    text = """
-🤖 eBay US DROPSHIPPING AI BRAIN
+    prices = []
+    sellers = []
+    titles = []
+    conditions = Counter()
+    shipping_costs = []
 
-Komandalar:
+    us_location_count = 0
+    fixed_price_count = 0
+    auction_count = 0
+    free_shipping_count = 0
+    promoted_count = 0
+    top_rated_count = 0
 
-🔎 /ebay
-Real eBay US nəticələrini göstərir.
+    for item in items:
+        if not isinstance(item, dict):
+            continue
 
-🧠 /analyze
-Real eBay məlumatı + AI product research.
+        title = clean_text(item.get("title"))
+        if title:
+            titles.append(title)
 
-🤖 /ai
-Ümumi AI köməkçisi.
-Məhsul adı yazsan avtomatik real eBay analizi edir.
-
-🔥 /trend
-AI məhsul araşdırma ideyaları.
-
-💰 /profit
-Profit hesablayır.
-
-🏷 /title
-3 eBay SEO title yaradır.
-
-
-Misallar:
-
-/ebay portable mini vacuum cleaner wireless
-
-/analyze portable mini vacuum cleaner wireless
-
-/ai portable mini vacuum cleaner wireless
-
-/ai calming pet bed
-
-/profit 9.20 24.99 3
-
-/title portable mini vacuum cleaner wireless
-"""
-
-    await update.message.reply_text(
-        text
-    )
-
-
-# ============================================================
-# EBAY COMMAND
-# ============================================================
-
-async def ebay_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not context.args:
-
-        await update.message.reply_text(
-            "⚠️ Misal:\n\n"
-            "/ebay portable mini vacuum cleaner wireless"
+        price_data = item.get("price") or {}
+        price = (
+            safe_float(price_data.get("value"))
+            if isinstance(price_data, dict)
+            else safe_float(price_data)
         )
+        if price is not None and price >= 0:
+            prices.append(price)
 
-        return
+        seller = item.get("seller") or {}
+        if isinstance(seller, dict):
+            feedback = safe_float(seller.get("feedbackScore"))
+            if feedback is not None:
+                sellers.append(feedback)
 
-    keyword = " ".join(
-        context.args
-    )
+        location = item.get("itemLocation") or {}
+        if isinstance(location, dict):
+            country = clean_text(location.get("country")).upper()
+            if country == "US":
+                us_location_count += 1
 
-    wait = await update.message.reply_text(
-        "🔎 REAL eBay US axtarılır...\n"
-        "📊 Real listing məlumatları yığılır..."
-    )
+        condition = clean_text(item.get("condition"), "Unknown")
+        conditions[condition] += 1
 
-    try:
+        buying_options = item.get("buyingOptions") or []
+        if "FIXED_PRICE" in buying_options:
+            fixed_price_count += 1
+        if "AUCTION" in buying_options:
+            auction_count += 1
 
-        extracted, score, decision, reasons = (
-            perform_product_research(
-                keyword,
-                limit=50
-            )
-        )
+        if item.get("priorityListing") is True:
+            promoted_count += 1
+        if item.get("topRatedBuyingExperience") is True:
+            top_rated_count += 1
 
-        report = build_real_ebay_report(
-            keyword,
-            extracted
-        )
+        shipping_options = item.get("shippingOptions") or []
+        if isinstance(shipping_options, list):
+            values = []
+            for shipping in shipping_options:
+                if not isinstance(shipping, dict):
+                    continue
+                sd = shipping.get("shippingCost") or {}
+                value = (
+                    safe_float(sd.get("value"))
+                    if isinstance(sd, dict)
+                    else safe_float(sd)
+                )
+                if value is not None and value >= 0:
+                    values.append(value)
 
-        result = (
-            report
-            + "\n\n"
-            + "🎯 SYSTEM PRODUCT SCORE\n"
-            + f"{score}/100\n"
-            + f"📌 {decision}\n\n"
-            + "🧮 SCORE SƏBƏBLƏRİ\n"
-            + "\n".join(
-                f"• {r}"
-                for r in reasons
-            )
-        )
+            if values:
+                best = min(values)
+                shipping_costs.append(best)
+                if best == 0:
+                    free_shipping_count += 1
 
-        try:
-            await wait.delete()
-        except Exception:
-            pass
+    sample_prices = trimmed_values(prices)
 
-        await send_long_message(
-            update,
-            result
-        )
-
-    except Exception as error:
-
-        print(
-            "eBay command error:",
-            repr(error)
-        )
-
-        try:
-            await wait.delete()
-        except Exception:
-            pass
-
-        await update.message.reply_text(
-            "❌ eBay xətası:\n\n"
-            + str(error)[:1800]
-        )
+    return {
+        "items": items,
+        "total": total,
+        "sample_size": len(items),
+        "prices": prices,
+        "sample_prices": sample_prices,
+        "avg": statistics.mean(sample_prices) if sample_prices else None,
+        "median": statistics.median(sample_prices) if sample_prices else None,
+        "p10": percentile(sample_prices, 10),
+        "p25": percentile(sample_prices, 25),
+        "p75": percentile(sample_prices, 75),
+        "p90": percentile(sample_prices, 90),
+        "sellers": sellers,
+        "titles": titles,
+        "conditions": conditions,
+        "shipping_costs": shipping_costs,
+        "us_location_count": us_location_count,
+        "fixed_price_count": fixed_price_count,
+        "auction_count": auction_count,
+        "free_shipping_count": free_shipping_count,
+        "promoted_count": promoted_count,
+        "top_rated_count": top_rated_count,
+    }
 
 
 # ============================================================
-# ANALYZE COMMAND
+# PROFESSIONAL SCORE
 # ============================================================
 
-async def analyze_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+def calculate_score(data: dict):
+    total = data["total"]
+    sample = max(1, data["sample_size"])
+    prices = data["sample_prices"]
+    sellers = data["sellers"]
+    titles = data["titles"]
 
-    if not context.args:
+    score = 100
+    reasons = []
 
-        await update.message.reply_text(
-            "⚠️ Misal:\n\n"
-            "/analyze portable mini vacuum cleaner wireless"
+    # Competition
+    if total <= 300:
+        penalty = 0
+    elif total <= 1000:
+        penalty = 5
+    elif total <= 3000:
+        penalty = 10
+    elif total <= 10000:
+        penalty = 18
+    elif total <= 20000:
+        penalty = 26
+    else:
+        penalty = 35
+
+    score -= penalty
+    reasons.append(f"Listing rəqabəti: -{penalty}")
+
+    # Price pressure
+    if prices:
+        median_price = statistics.median(prices)
+        low_price_ratio = sum(
+            1 for p in prices if p <= median_price * 0.90
+        ) / len(prices)
+
+        if median_price < 10:
+            penalty = 15
+        elif median_price < 15:
+            penalty = 11
+        elif median_price < 20:
+            penalty = 6
+        else:
+            penalty = 0
+
+        if low_price_ratio >= 0.45:
+            penalty += 5
+        elif low_price_ratio >= 0.30:
+            penalty += 2
+
+        penalty = min(penalty, 20)
+        score -= penalty
+        reasons.append(f"Aşağı qiymət təzyiqi: -{penalty}")
+
+    # Strong sellers
+    if sellers:
+        strong_10k = sum(s >= 10000 for s in sellers) / len(sellers)
+        strong_100k = sum(s >= 100000 for s in sellers) / len(sellers)
+
+        if strong_100k >= 0.25:
+            penalty = 10
+        elif strong_10k >= 0.40:
+            penalty = 7
+        elif strong_10k >= 0.20:
+            penalty = 4
+        else:
+            penalty = 0
+
+        score -= penalty
+        reasons.append(f"Güclü seller rəqabəti: -{penalty}")
+
+    # Duplicate titles
+    normalized = [normalize_title(t) for t in titles if normalize_title(t)]
+    duplicate_ratio = 0.0
+
+    if normalized:
+        counts = Counter(normalized)
+        duplicate_ratio = (
+            sum(c - 1 for c in counts.values() if c > 1)
+            / len(normalized)
         )
 
-        return
+        if duplicate_ratio >= 0.60:
+            penalty = 10
+        elif duplicate_ratio >= 0.40:
+            penalty = 8
+        elif duplicate_ratio >= 0.25:
+            penalty = 6
+        elif duplicate_ratio >= 0.10:
+            penalty = 3
+        else:
+            penalty = 0
 
-    if not gemini_client:
+        score -= penalty
+        reasons.append(f"Oxşar/təkrarlanan başlıqlar: -{penalty}")
 
-        await update.message.reply_text(
-            "❌ GEMINI_API_KEY tapılmadı."
-        )
+    # US location
+    us_ratio = data["us_location_count"] / sample
 
-        return
+    if us_ratio < 0.30:
+        penalty = 8
+    elif us_ratio < 0.60:
+        penalty = 4
+    else:
+        penalty = 0
 
-    keyword = " ".join(
-        context.args
-    )
+    score -= penalty
+    reasons.append(f"US location siqnalı: -{penalty}")
 
-    wait = await update.message.reply_text(
-        "🧠 AI PRODUCT BRAIN işə düşdü...\n"
-        "🔎 REAL eBay US məlumatları alınır...\n"
-        "📊 Qiymətlər və seller məlumatları analiz edilir..."
-    )
+    # Shipping competition
+    shipping = data["shipping_costs"]
+    if shipping:
+        free_ratio = data["free_shipping_count"] / len(shipping)
 
-    try:
+        if free_ratio < 0.40:
+            penalty = 4
+        elif free_ratio < 0.60:
+            penalty = 2
+        else:
+            penalty = 0
 
-        extracted, score, decision, reasons = (
-            perform_product_research(
-                keyword,
-                limit=50
-            )
-        )
+        score -= penalty
+        reasons.append(f"Shipping rəqabəti: -{penalty}")
 
-        answer = ai_product_analysis(
-            keyword,
-            extracted,
-            score,
-            decision
-        )
+    score = max(0, min(100, round(score)))
 
-        try:
-            await wait.delete()
-        except Exception:
-            pass
+    if score >= 75:
+        decision = "🟢 GO"
+    elif score >= 55:
+        decision = "🟡 MAYBE"
+    else:
+        decision = "🔴 NO-GO"
 
-        await send_long_message(
-            update,
-            answer
-        )
+    if data["sample_size"] >= 40 and prices and sellers:
+        confidence = "🟢 YÜKSƏK"
+    elif data["sample_size"] >= 20 and prices:
+        confidence = "🟡 ORTA"
+    else:
+        confidence = "🔴 AŞAĞI"
 
-    except Exception as error:
+    metrics = {
+        "us_ratio": us_ratio,
+        "duplicate_ratio": duplicate_ratio,
+    }
 
-        print(
-            "Analyze error:",
-            repr(error)
-        )
-
-        try:
-            await wait.delete()
-        except Exception:
-            pass
-
-        await update.message.reply_text(
-            "❌ Analiz xətası:\n\n"
-            + str(error)[:1800]
-        )
+    return score, decision, confidence, reasons, metrics
 
 
 # ============================================================
-# AI COMMAND
+# PROFIT ENGINE
 # ============================================================
 
-async def ai_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+def calculate_profit(supplier, sale, shipping=0.0):
+    fee = sale * EBAY_FEE_RATE + EBAY_FIXED_FEE
+    net = sale - supplier - shipping - fee
+    margin = (net / sale * 100) if sale > 0 else 0
+    return fee, net, margin
 
-    if not context.args:
 
-        await update.message.reply_text(
-            "⚠️ Misal:\n\n"
-            "/ai portable mini vacuum cleaner wireless"
-        )
+def max_supplier_price(sale, target_margin, shipping=0.0):
+    target_profit = sale * (target_margin / 100)
+    fee = sale * EBAY_FEE_RATE + EBAY_FIXED_FEE
+    return sale - fee - shipping - target_profit
 
-        return
 
-    if not gemini_client:
+# ============================================================
+# REPORT
+# ============================================================
 
-        await update.message.reply_text(
-            "❌ GEMINI_API_KEY tapılmadı."
-        )
+def build_report(keyword, data, score, decision, confidence,
+                 reasons, metrics, supplier_price=None):
 
-        return
+    prices = data["prices"]
+    sample_prices = data["sample_prices"]
+    sellers = data["sellers"]
+    median_price = data["median"]
 
-    user_prompt = " ".join(
-        context.args
-    )
+    us_pct = metrics["us_ratio"] * 100
+    duplicate_pct = metrics["duplicate_ratio"] * 100
 
-    # --------------------------------------------------------
-    # PRODUCT DETECTION
-    # --------------------------------------------------------
-
-    product_words = [
-        "vacuum",
-        "cleaner",
-        "bed",
-        "frother",
-        "holder",
-        "stand",
-        "light",
-        "lamp",
-        "roller",
-        "label maker",
-        "phone",
-        "charger",
-        "organizer",
-        "brush",
-        "portable",
-        "wireless",
-        "magnetic",
-        "pet",
-        "kitchen",
-        "car",
-        "keyboard",
+    lines = [
+        "🔎 REAL EBAY US DATA",
+        "",
+        f"🔍 Search keyword: {keyword}",
+        f"📦 eBay result count: {data['total']:,}",
+        f"📊 API sample analyzed: {data['sample_size']} listings",
+        "",
+        "💰 REAL PRICE DATA",
+        f"• Minimum sample: {money(min(prices) if prices else None)}",
+        f"• Maximum sample: {money(max(prices) if prices else None)}",
+        f"• 10th percentile: {money(data['p10'])}",
+        f"• 25th percentile: {money(data['p25'])}",
+        f"• Average sample: {money(data['avg'])}",
+        f"• Median sample: {money(median_price)}",
+        f"• 75th percentile: {money(data['p75'])}",
+        f"• 90th percentile: {money(data['p90'])}",
+        "• 5%-95% trimmed sample outlier təsirini azaldır.",
+        "",
+        "👥 REAL SELLER DATA",
+        f"• Seller feedback sample: {len(sellers)}",
+        f"• Minimum feedback: {min(sellers) if sellers else 'N/A'}",
+        f"• Maximum feedback: {max(sellers) if sellers else 'N/A'}",
+        f"• 10,000+ feedback sellers: {sum(s >= 10000 for s in sellers)}",
+        f"• 100,000+ feedback sellers: {sum(s >= 100000 for s in sellers)}",
+        "",
+        "🇺🇸 US MARKET SIGNAL",
+        f"• Item location = US: {data['us_location_count']}/{data['sample_size']} ({us_pct:.1f}%)",
+        f"• Fixed price: {data['fixed_price_count']}/{data['sample_size']}",
+        f"• Auction: {data['auction_count']}/{data['sample_size']}",
+        f"• Free shipping: {data['free_shipping_count']}/{data['sample_size']}",
+        f"• Promoted listings visible: {data['promoted_count']}/{data['sample_size']}",
+        f"• Top Rated Plus signal: {data['top_rated_count']}/{data['sample_size']}",
+        "",
+        "🧠 SATURATION SIGNALS",
+        f"• Similar/duplicate normalized titles: {duplicate_pct:.1f}%",
+        f"• New condition: {data['conditions'].get('New', 0)}",
+        "",
+        "📋 REAL SAMPLE LISTINGS",
     ]
 
-    looks_like_product = any(
-        word in user_prompt.lower()
-        for word in product_words
-    )
+    for i, item in enumerate(data["items"][:15], 1):
+        title = clean_text(item.get("title"), "Adsız məhsul")
 
-    # --------------------------------------------------------
-    # AUTOMATIC REAL EBAY PRODUCT ANALYSIS
-    # --------------------------------------------------------
-
-    if looks_like_product:
-
-        wait = await update.message.reply_text(
-            "🔎 Məhsul aşkarlandı...\n"
-            "🇺🇸 Real eBay US datası alınır...\n"
-            "🧠 AI real məlumatı analiz edir..."
+        price_data = item.get("price") or {}
+        price = (
+            safe_float(price_data.get("value"))
+            if isinstance(price_data, dict)
+            else safe_float(price_data)
         )
 
-        try:
+        seller = item.get("seller") or {}
+        feedback = seller.get("feedbackScore", "N/A") if isinstance(seller, dict) else "N/A"
+        feedback_pct = seller.get("feedbackPercentage", "N/A") if isinstance(seller, dict) else "N/A"
 
-            extracted, score, decision, reasons = (
-                perform_product_research(
-                    user_prompt,
-                    limit=50
-                )
+        location = item.get("itemLocation") or {}
+        country = clean_text(location.get("country"), "N/A") if isinstance(location, dict) else "N/A"
+
+        shipping_values = []
+        for ship in item.get("shippingOptions") or []:
+            if not isinstance(ship, dict):
+                continue
+            sd = ship.get("shippingCost") or {}
+            value = (
+                safe_float(sd.get("value"))
+                if isinstance(sd, dict)
+                else safe_float(sd)
             )
+            if value is not None:
+                shipping_values.append(value)
 
-            answer = ai_product_analysis(
-                user_prompt,
-                extracted,
+        ship = min(shipping_values) if shipping_values else None
+
+        lines.append(
+            f"\n{i}. {title}\n"
+            f"   💵 {money(price)} | 👤 {feedback} | ⭐ {feedback_pct}%\n"
+            f"   📍 {country} | 🚚 {money(ship)}"
+        )
+
+    lines.extend([
+        "",
+        "⚠️ DATA LIMITATIONS",
+        "• Browse API sold count vermir.",
+        "• Browse API sell-through rate vermir.",
+        "• Seller feedback satış sayı deyil.",
+        "• Supplier qiyməti eBay datası deyil.",
+        "• Trend/viral status bu nəticədən avtomatik təsdiqlənmir.",
+        "",
+        "🎯 SYSTEM PRODUCT SCORE",
+        f"{score}/100",
+        f"📌 {decision}",
+        "",
+        "🧮 SCORE SƏBƏBLƏRİ",
+    ])
+
+    lines.extend(f"• {reason}" for reason in reasons)
+
+    if supplier_price is not None and median_price:
+        fee, net, margin = calculate_profit(
+            supplier_price,
+            median_price,
+            0,
+        )
+
+        lines.extend([
+            "",
+            "💰 SUPPLIER / PROFIT CHECK",
+            f"• Supplier: {money(supplier_price)}",
+            f"• Median test sale: {money(median_price)}",
+            f"• Estimated eBay fee: {money(fee)}",
+            f"• Estimated net profit: {money(net)}",
+            f"• Estimated margin: {margin:.1f}%",
+            f"• 10% margin üçün max supplier: {money(max_supplier_price(median_price, 10))}",
+            f"• 15% margin üçün max supplier: {money(max_supplier_price(median_price, 15))}",
+            "• Bu research estimate-dir; real eBay fee kateqoriyaya/hesaba görə dəyişə bilər.",
+        ])
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# COMMANDS
+# ============================================================
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🤖 eBay Professional AI Brain\n\n"
+        "🔎 /ebay <məhsul> — real eBay US data\n"
+        "🧠 /analyze <məhsul> — real data + AI qərar\n"
+        "💰 /analyze <məhsul> | supplier=5.20 — profit daxil\n"
+        "💵 /profit <supplier> <sale> [shipping]\n"
+        "🏷 /title <məhsul> — 3 SEO title\n"
+        "🔥 /trend — AI product research ideas\n"
+        "🤖 /ai <sual> — ümumi AI\n\n"
+        "Misal:\n"
+        "/analyze portable mini vacuum cleaner wireless | supplier=5.20"
+    )
+
+
+def parse_analyze_args(args):
+    raw = " ".join(args).strip()
+    supplier = None
+
+    match = re.search(
+        r"(?:supplier|cost|alış)\s*=\s*\$?\s*([0-9]+(?:\.[0-9]+)?)",
+        raw,
+        re.I,
+    )
+
+    if match:
+        supplier = float(match.group(1))
+        raw = raw[:match.start()] + raw[match.end():]
+
+    return raw.replace("||", "|").strip(" |"), supplier
+
+
+async def ebay_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("⚠️ Misal: /ebay calming pet bed")
+        return
+
+    keyword = " ".join(context.args)
+
+    wait = await update.message.reply_text(
+        "🔎 Real eBay US datası alınır...\n"
+        "📊 Qiymət + seller + shipping analiz edilir..."
+    )
+
+    try:
+        data = extract_ebay_data(ebay_search_products(keyword))
+
+        if not data["items"]:
+            result = f"❌ eBay-də '{keyword}' üçün listing tapılmadı."
+        else:
+            score, decision, confidence, reasons, metrics = calculate_score(data)
+            result = build_report(
+                keyword,
+                data,
                 score,
-                decision
+                decision,
+                confidence,
+                reasons,
+                metrics,
             )
 
+        try:
+            await wait.delete()
+        except Exception:
+            pass
+
+        await send_long_message(update, result)
+
+    except Exception as error:
+        try:
+            await wait.delete()
+        except Exception:
+            pass
+
+        await update.message.reply_text(
+            "❌ Real eBay analizində xəta oldu:\n\n"
+            + str(error)[:1800]
+        )
+
+
+async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Misal:\n"
+            "/analyze portable mini vacuum cleaner wireless\n\n"
+            "Supplier ilə:\n"
+            "/analyze portable mini vacuum cleaner wireless | supplier=5.20"
+        )
+        return
+
+    keyword, supplier_price = parse_analyze_args(context.args)
+
+    if not keyword:
+        await update.message.reply_text("❌ Məhsul adı boşdur.")
+        return
+
+    wait = await update.message.reply_text(
+        "🧠 PROFESSIONAL AI BRAIN işə düşdü...\n"
+        "🔎 Real eBay US datası alınır...\n"
+        "📊 Rəqabət + qiymət + seller + shipping hesablanır..."
+    )
+
+    try:
+        data = extract_ebay_data(ebay_search_products(keyword))
+
+        if not data["items"]:
+            raise RuntimeError("eBay-də bu axtarış üçün listing tapılmadı.")
+
+        score, decision, confidence, reasons, metrics = calculate_score(data)
+
+        report = build_report(
+            keyword,
+            data,
+            score,
+            decision,
+            confidence,
+            reasons,
+            metrics,
+            supplier_price,
+        )
+
+        if gemini_client:
             try:
-                await wait.delete()
-            except Exception:
-                pass
+                result = ai_product_brain(
+                    keyword,
+                    report,
+                    score,
+                    decision,
+                    confidence,
+                    supplier_price,
+                )
+            except Exception as ai_error:
+                print("AI error:", repr(ai_error))
+                result = report
+        else:
+            result = report
 
-            await send_long_message(
-                update,
-                answer
+        try:
+            await wait.delete()
+        except Exception:
+            pass
+
+        await send_long_message(update, result)
+
+    except Exception as error:
+        try:
+            await wait.delete()
+        except Exception:
+            pass
+
+        await update.message.reply_text(
+            "❌ Real eBay analizində xəta oldu:\n\n"
+            + str(error)[:1800]
+        )
+
+
+async def profit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "⚠️ Format:\n/profit <supplier> <sale> [shipping]\n\n"
+            "Misal:\n/profit 5.20 12.99 0"
+        )
+        return
+
+    try:
+        supplier = float(context.args[0])
+        sale = float(context.args[1])
+        shipping = float(context.args[2]) if len(context.args) >= 3 else 0.0
+
+        fee, net, margin = calculate_profit(supplier, sale, shipping)
+        status = "🟢 GO" if net > 0 else "🟡 BREAK-EVEN" if net == 0 else "🔴 NO-GO"
+
+        await update.message.reply_text(
+            "💰 PROFIT ENGINE\n\n"
+            f"🛒 Supplier: {money(supplier)}\n"
+            f"🏷 Sale: {money(sale)}\n"
+            f"🚚 Shipping: {money(shipping)}\n"
+            f"💸 Estimated eBay fee: {money(fee)}\n"
+            f"💵 Net profit: {money(net)}\n"
+            f"📈 Margin: {margin:.1f}%\n\n"
+            f"🎯 {status}\n\n"
+            "⚠️ Research estimate; actual eBay fees may vary."
+        )
+
+    except ValueError:
+        await update.message.reply_text("❌ Qiymətləri rəqəmlə yaz.")
+
+
+async def title_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Misal: /title portable mini vacuum cleaner"
+        )
+        return
+
+    if not gemini_client:
+        await update.message.reply_text("❌ GEMINI_API_KEY tapılmadı.")
+        return
+
+    product = " ".join(context.args)
+
+    prompt = f"""
+Create exactly 3 eBay US titles for:
+{product}
+
+Rules:
+- English.
+- Maximum 80 characters each.
+- Use only facts supported by the product name.
+- No invented brand/specifications.
+- No fake claims.
+- No emojis.
+- Exactly 3 lines.
+"""
+
+    try:
+        answer = ask_ai(prompt)
+        titles = []
+
+        for line in answer.splitlines():
+            line = re.sub(
+                r"^\s*(?:\d+[\.\)\-:]|\-|\*)\s*",
+                "",
+                line.strip(),
             )
+            if line:
+                titles.append(" ".join(line.split())[:80])
 
-            return
+        titles = titles[:3]
 
-        except Exception as error:
+        if not titles:
+            raise RuntimeError("AI title qaytarmadı.")
 
-            print(
-                "AI product search error:",
-                repr(error)
-            )
+        result = "🏷 EBAY SEO TITLES\n\n"
 
-            try:
-                await wait.delete()
-            except Exception:
-                pass
+        for i, title in enumerate(titles, 1):
+            result += f"{i}. {title}\n📏 {len(title)}/80\n\n"
 
-            await update.message.reply_text(
-                "❌ Real eBay analizində xəta oldu:\n\n"
-                + str(error)[:1500]
-            )
+        await update.message.reply_text(result)
 
-            return
+    except Exception as error:
+        await update.message.reply_text(
+            "❌ Title xətası:\n" + str(error)[:1000]
+        )
 
-    # --------------------------------------------------------
-    # GENERAL AI
-    # --------------------------------------------------------
+
+async def trend_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not gemini_client:
+        await update.message.reply_text("❌ GEMINI_API_KEY tapılmadı.")
+        return
+
+    prompt = """
+Sən eBay US dropshipping product researcher-sən.
+
+5 məhsul araşdırma ideyası ver.
+
+Qəti qaydalar:
+- Sold count uydurma.
+- Sell-through uydurma.
+- Supplier price uydurma.
+- Trend/viral sözünü sübut olmadan fakt kimi yazma.
+- Kiçik, asan göndərilən, aşağı return riskli məhsullara üstünlük ver.
+- Hər məhsul üçün:
+  Product:
+  Category:
+  Why research:
+  Main risk:
+  What to validate on eBay:
+- Azərbaycan dilində yaz.
+"""
+
+    try:
+        answer = ask_ai(prompt)
+        await send_long_message(
+            update,
+            "🔥 AI PRODUCT RESEARCH IDEAS\n\n" + answer
+        )
+    except Exception as error:
+        await update.message.reply_text(
+            "❌ Trend AI xətası:\n" + str(error)[:1000]
+        )
+
+
+async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Misal: /ai eBay dropshipping üçün məhsul ideyası ver"
+        )
+        return
+
+    if not gemini_client:
+        await update.message.reply_text("❌ GEMINI_API_KEY tapılmadı.")
+        return
+
+    question = " ".join(context.args)
 
     prompt = f"""
 Sən eBay US dropshipping köməkçisisən.
 
 İstifadəçinin sualı:
-
-{user_prompt}
+{question}
 
 Qaydalar:
-
 - Azərbaycan dilində cavab ver.
-- Rəqəm bilmirsənsə uydurma.
-- Sold count uydurma.
-- Sell-through uydurma.
-- Supplier qiyməti uydurma.
-- Trend rəqəmi uydurma.
-- Praktik və qısa cavab ver.
+- Fakt bilmirsənsə uydurma.
+- Sold count/sell-through yoxdursa bunu açıq de.
+- Praktik və konkret cavab ver.
 """
 
     try:
-
-        answer = ask_ai(
-            prompt
-        )
-
-        await send_long_message(
-            update,
-            "🤖 AI BRAIN:\n\n"
-            + answer
-        )
-
+        answer = ask_ai(prompt)
+        await send_long_message(update, "🤖 AI BRAIN\n\n" + answer)
     except Exception as error:
-
-        print(
-            "Gemini error:",
-            repr(error)
-        )
-
         await update.message.reply_text(
-            "❌ AI xətası:\n"
-            + str(error)[:1500]
+            "❌ AI xətası:\n" + str(error)[:1200]
         )
 
 
 # ============================================================
-# TREND COMMAND
-# ============================================================
-
-async def trend_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not gemini_client:
-
-        await update.message.reply_text(
-            "❌ GEMINI_API_KEY tapılmadı."
-        )
-
-        return
-
-    wait = await update.message.reply_text(
-        "🔥 AI product research ideyaları hazırlanır..."
-    )
-
-    prompt = """
-Sən eBay US dropshipping product research AI-sən.
-
-Mənə 10 məhsul araşdırma ideyası ver.
-
-Məhsullar:
-
-- kiçik və asan göndərilə bilən olsun
-- mümkün qədər aşağı return riskli olsun
-- çox kövrək olmasın
-- çox böyük/volumetrik olmasın
-- mümkün qədər geniş istifadə sahəsi olsun
-
-ÇOX VACİB:
-
-Heç bir real satış sayı iddia etmə.
-
-Heç bir sold count yazma.
-
-Heç bir sell-through rate yazma.
-
-Heç bir supplier qiyməti uydurma.
-
-Heç bir "viral" və ya "trend" iddiasını fakt kimi göstərmə.
-
-Sadəcə araşdırmağa dəyər məhsul ideyaları ver.
-
-Azərbaycan dilində cavab ver.
-
-Format:
-
-1. Product:
-Category:
-Why research:
-Main risk:
-
-2. Product:
-Category:
-Why research:
-Main risk:
-"""
-
-    try:
-
-        answer = ask_ai(
-            prompt
-        )
-
-        try:
-            await wait.delete()
-        except Exception:
-            pass
-
-        await send_long_message(
-            update,
-            "🔥 AI PRODUCT RESEARCH IDEAS\n\n"
-            + answer
-        )
-
-    except Exception as error:
-
-        print(
-            "Trend error:",
-            repr(error)
-        )
-
-        try:
-            await wait.delete()
-        except Exception:
-            pass
-
-        await update.message.reply_text(
-            "❌ Trend AI xətası:\n"
-            + str(error)[:1200]
-        )
-
-
-# ============================================================
-# PROFIT CALCULATOR
-# ============================================================
-
-def calculate_profit(
-    supplier_price,
-    ebay_price,
-    shipping_cost=0.0,
-    shipping_charge=0.0
-):
-
-    final_value_fee = (
-        ebay_price * 0.1325
-    )
-
-    fixed_fee = 0.30
-
-    total_ebay_fees = (
-        final_value_fee
-        + fixed_fee
-    )
-
-    total_costs = (
-        supplier_price
-        + shipping_cost
-    )
-
-    net_profit = (
-        ebay_price
-        + shipping_charge
-        - total_costs
-        - total_ebay_fees
-    )
-
-    if ebay_price > 0:
-
-        margin = (
-            net_profit /
-            ebay_price
-        ) * 100
-
-    else:
-
-        margin = 0
-
-    return (
-        total_ebay_fees,
-        final_value_fee,
-        fixed_fee,
-        net_profit,
-        margin
-    )
-
-
-async def profit_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    args = context.args
-
-    if len(args) < 2:
-
-        await update.message.reply_text(
-            "⚠️ Format:\n\n"
-            "/profit <supplier> <ebay> [shipping]\n\n"
-            "Misal:\n"
-            "/profit 9.20 24.99 3"
-        )
-
-        return
-
-    try:
-
-        supplier_price = float(
-            args[0]
-        )
-
-        ebay_price = float(
-            args[1]
-        )
-
-        shipping_cost = (
-            float(args[2])
-            if len(args) >= 3
-            else 0.0
-        )
-
-        if (
-            supplier_price < 0
-            or ebay_price < 0
-            or shipping_cost < 0
-        ):
-
-            raise ValueError
-
-        (
-            total_fees,
-            final_value_fee,
-            fixed_fee,
-            net_profit,
-            margin
-        ) = calculate_profit(
-            supplier_price,
-            ebay_price,
-            shipping_cost
-        )
-
-        if net_profit > 0:
-
-            status = "🟢 GO"
-
-        elif net_profit == 0:
-
-            status = "🟡 BREAK-EVEN"
-
-        else:
-
-            status = "🔴 NO-GO"
-
-        response = (
-            "💰 PROFIT CALCULATOR\n\n"
-
-            f"🛒 Supplier: "
-            f"${supplier_price:.2f}\n"
-
-            f"🏷 eBay satış: "
-            f"${ebay_price:.2f}\n"
-
-            f"🚚 Shipping: "
-            f"${shipping_cost:.2f}\n\n"
-
-            "💸 eBay fee estimate:\n"
-
-            f"• Final Value Fee: "
-            f"${final_value_fee:.2f}\n"
-
-            f"• Fixed Fee: "
-            f"${fixed_fee:.2f}\n"
-
-            f"• Total eBay fees: "
-            f"${total_fees:.2f}\n\n"
-
-            f"💵 Net profit: "
-            f"${net_profit:.2f}\n"
-
-            f"📈 Margin: "
-            f"{margin:.2f}%\n\n"
-
-            f"🎯 Result: {status}\n\n"
-
-            "⚠️ Bu sadələşdirilmiş research "
-            "hesablamasıdır. Real eBay fee "
-            "kateqoriyaya və hesaba görə dəyişə bilər."
-        )
-
-        await update.message.reply_text(
-            response
-        )
-
-    except ValueError:
-
-        await update.message.reply_text(
-            "❌ Düzgün rəqəm yaz.\n\n"
-            "Misal:\n"
-            "/profit 9.20 24.99 3"
-        )
-
-
-# ============================================================
-# TITLE COMMAND
-# ============================================================
-
-async def title_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not context.args:
-
-        await update.message.reply_text(
-            "⚠️ Misal:\n"
-            "/title portable mini vacuum cleaner wireless"
-        )
-
-        return
-
-    if not gemini_client:
-
-        await update.message.reply_text(
-            "❌ GEMINI_API_KEY tapılmadı."
-        )
-
-        return
-
-    product = " ".join(
-        context.args
-    )
-
-    prompt = f"""
-Create exactly 3 eBay US titles for:
-
-{product}
-
-Rules:
-
-- English.
-- Maximum 80 characters.
-- Do not invent brand.
-- Do not invent specifications.
-- Do not invent battery size.
-- Do not invent suction power.
-- Do not invent material.
-- Do not write Best Seller.
-- Do not write Top Rated.
-- Do not write Fast Shipping.
-- Do not write Free Shipping.
-- Do not write fake claims.
-- Use useful search keywords.
-- No emojis.
-- Exactly 3 lines.
-- No explanation.
-"""
-
-    try:
-
-        answer = ask_ai(
-            prompt
-        )
-
-        raw_titles = [
-            line.strip()
-            for line in answer.splitlines()
-            if line.strip()
-        ]
-
-        titles = []
-
-        for title in raw_titles:
-
-            title = re.sub(
-                r"^\s*(?:\d+[\.\)\-:]|\-|\*)\s*",
-                "",
-                title
-            )
-
-            title = " ".join(
-                title.split()
-            )
-
-            title = title[
-                :80
-            ].strip()
-
-            if title:
-                titles.append(
-                    title
-                )
-
-        titles = titles[:3]
-
-        response = (
-            "🏷 EBAY SEO TITLES\n\n"
-        )
-
-        for index, title in enumerate(
-            titles,
-            1
-        ):
-
-            response += (
-                f"{index}. {title}\n"
-                f"📏 {len(title)}/80\n\n"
-            )
-
-        await update.message.reply_text(
-            response
-        )
-
-    except Exception as error:
-
-        print(
-            "Title error:",
-            repr(error)
-        )
-
-        await update.message.reply_text(
-            "❌ Title AI xətası:\n"
-            + str(error)[:1200]
-        )
-
-
-# ============================================================
-# FLASK
+# FLASK / RENDER HEALTH
 # ============================================================
 
 @app.route("/")
 def index():
-
-    return (
-        "eBay Dropshipping AI Brain "
-        "24/7 Aktivdir!",
-        200
-    )
+    return "eBay Professional AI Brain 24/7 Aktivdir!", 200
 
 
 @app.route("/health")
 def health():
-
     return {
         "status": "ok",
-        "telegram":
-            bool(TELEGRAM_TOKEN),
-
-        "gemini":
-            bool(GEMINI_API_KEY),
-
-        "ebay":
-            bool(
-                EBAY_CLIENT_ID
-                and
-                EBAY_CLIENT_SECRET
-            ),
-
-        "gemini_model":
-            GEMINI_MODEL,
-
+        "telegram": bool(TELEGRAM_TOKEN),
+        "gemini": bool(GEMINI_API_KEY),
+        "ebay": bool(EBAY_CLIENT_ID and EBAY_CLIENT_SECRET),
+        "gemini_model": GEMINI_MODEL,
+        "ebay_sample_limit": EBAY_SAMPLE_LIMIT,
     }, 200
 
 
 def run_flask():
-
-    port = int(
-        os.environ.get(
-            "PORT",
-            "5000"
-        )
-    )
-
-    app.run(
-        host="0.0.0.0",
-        port=port
-    )
+    port = int(os.environ.get("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port)
 
 
 # ============================================================
@@ -2162,102 +1076,28 @@ def run_flask():
 # ============================================================
 
 def main():
-
     if not TELEGRAM_TOKEN:
+        raise RuntimeError("TELEGRAM_TOKEN tapılmadı.")
 
-        raise RuntimeError(
-            "TELEGRAM_TOKEN tapılmadı."
-        )
-
-    if not GEMINI_API_KEY:
-
-        print(
-            "⚠️ GEMINI_API_KEY yoxdur."
-        )
-
-    if not EBAY_CLIENT_ID:
-
-        print(
-            "⚠️ EBAY_CLIENT_ID yoxdur."
-        )
-
-    if not EBAY_CLIENT_SECRET:
-
-        print(
-            "⚠️ EBAY_CLIENT_SECRET yoxdur."
-        )
-
-    Thread(
-        target=run_flask,
-        daemon=True
-    ).start()
+    Thread(target=run_flask, daemon=True).start()
 
     telegram_app = (
-        Application
-        .builder()
-        .token(
-            TELEGRAM_TOKEN
-        )
+        Application.builder()
+        .token(TELEGRAM_TOKEN)
         .build()
     )
 
-    telegram_app.add_handler(
-        CommandHandler(
-            "start",
-            start_command
-        )
-    )
+    telegram_app.add_handler(CommandHandler("start", start_command))
+    telegram_app.add_handler(CommandHandler("trend", trend_command))
+    telegram_app.add_handler(CommandHandler("ebay", ebay_command))
+    telegram_app.add_handler(CommandHandler("analyze", analyze_command))
+    telegram_app.add_handler(CommandHandler("profit", profit_command))
+    telegram_app.add_handler(CommandHandler("title", title_command))
+    telegram_app.add_handler(CommandHandler("ai", ai_command))
 
-    telegram_app.add_handler(
-        CommandHandler(
-            "ebay",
-            ebay_command
-        )
-    )
+    print("🤖 eBay Professional AI Brain uğurla işə düşdü.")
 
-    telegram_app.add_handler(
-        CommandHandler(
-            "analyze",
-            analyze_command
-        )
-    )
-
-    telegram_app.add_handler(
-        CommandHandler(
-            "ai",
-            ai_command
-        )
-    )
-
-    telegram_app.add_handler(
-        CommandHandler(
-            "trend",
-            trend_command
-        )
-    )
-
-    telegram_app.add_handler(
-        CommandHandler(
-            "profit",
-            profit_command
-        )
-    )
-
-    telegram_app.add_handler(
-        CommandHandler(
-            "title",
-            title_command
-        )
-    )
-
-    print(
-        "🤖 eBay Dropshipping AI Brain "
-        "uğurla işə düşdü."
-    )
-
-    telegram_app.run_polling(
-        drop_pending_updates=True
-    )
+    telegram_app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
