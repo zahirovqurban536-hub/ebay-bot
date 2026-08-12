@@ -947,11 +947,13 @@ async def analyze_command(
     if not context.args:
         await update.message.reply_text(
             "⚠️ Misal:\n"
-            "/analyze electric milk frother"
+            "/analyze electric milk frother\n\n"
+            "və ya:\n"
+            "/analyze wireless phone holder"
         )
         return
 
-    product = " ".join(context.args)
+    keyword = " ".join(context.args)
 
     if not gemini_client:
         await update.message.reply_text(
@@ -959,87 +961,241 @@ async def analyze_command(
         )
         return
 
-    # İstifadəçiyə gözləmə mesajı
     wait_message = await update.message.reply_text(
-        "🔎 Məhsul analiz edilir...\n"
-        "🤖 AI məlumatları yoxlayır..."
+        "🔎 Real eBay US məlumatları axtarılır...\n"
+        "🤖 Məhsul analiz edilir...\n"
+        "Bir az gözlə..."
     )
-
-    prompt = f"""
-Sən eBay dropshipping product research köməkçisisən.
-
-Məhsul:
-{product}
-
-Məhsulu aşağıdakı formada analiz et:
-
-🔎 MƏHSUL ANALİZİ
-
-📦 Məhsul:
-📈 Tələb:
-🏆 Rəqabət:
-💰 Satış potensialı:
-📦 Supplier uyğunluğu:
-⚠️ Risklər:
-
-💵 PROFİT:
-
-- Satış qiyməti:
-- Alış qiyməti:
-- Shipping:
-- eBay xərcləri:
-- Təxmini profit:
-
-🎯 SCORE: /100
-
-NƏTİCƏ:
-
-🟢 GO
-🟡 MAYBE
-🔴 NO-GO
-
-VACİB QAYDALAR:
-
-- Real sold count verilməyibsə, sold count UYDURMA.
-- Sell-through rate verilməyibsə, UYDURMA.
-- Supplier qiyməti verilməyibsə, UYDURMA.
-- Real satış sayı verilməyibsə, UYDURMA.
-- Trend olduğu sübut edilməyibsə, trend olduğunu iddia etmə.
-- Listing sayını satış sayı kimi qəbul etmə.
-- Seller feedback-i satış sayı kimi qəbul etmə.
-- Məlumat çatışmırsa açıq şəkildə "məlumat yoxdur" yaz.
-- Məhsulun risklərini ayrıca qeyd et.
-- Nəticəni Azərbaycan dilində yaz.
-- Qısa, aydın və real analiz ver.
-
-İstifadəçiyə boş və ümumi cavab vermə.
-Məhsul haqqında verilən məlumat azdırsa, bunu dürüst şəkildə bildir.
-"""
 
     try:
 
-        response = gemini_client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=prompt
+        # =================================================
+        # REAL EBAY SEARCH
+        # =================================================
+
+        data = ebay_search_products(
+            keyword,
+            limit=10
         )
 
-        answer = (
-            response.text
-            or "AI analiz qaytarmadı."
+        result = format_ebay_results(data)
+
+        # =================================================
+        # REAL DATA EXTRACTION
+        # =================================================
+
+        total_listings = 0
+        prices = []
+
+        if isinstance(data, dict):
+
+            total_listings = int(
+                data.get("total", 0)
+                or data.get("totalListings", 0)
+                or 0
+            )
+
+            items = (
+                data.get("itemSummaries")
+                or data.get("items")
+                or data.get("results")
+                or []
+            )
+
+            for item in items:
+
+                price = item.get("price")
+
+                if isinstance(price, dict):
+                    price = price.get("value")
+
+                try:
+
+                    if price is not None:
+                        prices.append(
+                            float(price)
+                        )
+
+                except (
+                    ValueError,
+                    TypeError
+                ):
+                    pass
+
+        # =================================================
+        # REAL SCORE
+        # =================================================
+
+        score, decision = (
+            calculate_product_research_score(
+                total_listings,
+                prices
+            )
         )
 
-        # Gözləmə mesajını sil
+        # =================================================
+        # AI ANALYSIS
+        # =================================================
+
+        analysis_prompt = f"""
+Sən eBay US dropshipping product research
+köməkçisisən.
+
+Məhsul:
+{keyword}
+
+Aşağıdakı məlumatlar REAL eBay Browse API
+nəticələrindən götürülüb:
+
+{result}
+
+REAL EBAY MƏLUMATLARI:
+
+Listing sayı:
+{total_listings}
+
+İlk nəticələrdən alınan qiymətlər:
+{prices}
+
+Sistem tərəfindən real məlumatlardan
+hesablanan ilkin score:
+{score}/100
+
+Sistem qərarı:
+{decision}
+
+VACİB QAYDALAR:
+
+1. Yalnız verilən real eBay məlumatlarından istifadə et.
+
+2. Sold count məlumatı yoxdursa:
+"Sold count: məlumat yoxdur"
+yaz.
+
+3. Sell-through rate məlumatı yoxdursa:
+"Sell-through: məlumat yoxdur"
+yaz.
+
+4. Supplier qiyməti verilməyibsə:
+supplier qiyməti UYDURMA.
+
+5. Satış sayı olmayan halda:
+"çox satılır" demə.
+
+6. Listing sayı satış sayı deyil.
+
+7. Seller feedback satış sayı deyil.
+
+8. Məhsulun trend olduğunu sübut edən məlumat
+yoxdursa trend olduğunu iddia etmə.
+
+9. Qiymətləri real eBay nəticələrindən istifadə et.
+
+10. Eyni və çox oxşar listinglər varsa,
+rəqabət göstəricisi kimi qeyd et.
+
+11. Çox bahalı və qeyri-adi qiymətlər varsa,
+onları ayrıca qeyd et.
+
+12. Sistem score-unu dəyişmə.
+Verilən score:
+{score}/100
+
+13. Sistem qərarını dəyişmə.
+Verilən qərar:
+{decision}
+
+Cavabı Azərbaycan dilində ver.
+
+FORMAT:
+
+🔎 REAL EBAY MƏHSUL ANALİZİ
+
+📦 Məhsul:
+{keyword}
+
+🇺🇸 eBay bazarı:
+- Listing sayı:
+
+💰 Qiymət:
+- Minimum:
+- Maksimum:
+- Orta:
+
+🏆 Rəqabət:
+🟢 Aşağı
+🟡 Orta
+🔴 Yüksək
+
+👥 Seller vəziyyəti:
+
+📈 Satış potensialı:
+
+⚠️ Məlumat çatışmazlığı:
+- Sold count:
+- Sell-through:
+- Supplier qiyməti:
+- Trend:
+
+🎯 PRODUCT SCORE:
+{score}/100
+
+NƏTİCƏ:
+{decision}
+
+💡 Qısa səbəb:
+
+Sonda məhsulun dropshipping üçün
+əsas üstünlüklərini və əsas risklərini qısa yaz.
+"""
+
         try:
-            await wait_message.delete()
-        except Exception:
-            pass
 
-        final_response = (
-            "🔎 AI MƏHSUL ANALİZİ\n\n"
-            + answer
-        )
+            ai_response = (
+                gemini_client.models.generate_content(
+                    model="gemini-3.6-flash",
+                    contents=analysis_prompt
+                )
+            )
 
-        # Telegram limitinə görə böl
+            ai_answer = (
+                ai_response.text
+                or "AI analiz qaytarmadı."
+            )
+
+            try:
+                await wait_message.delete()
+            except Exception:
+                pass
+
+            final_response = (
+                ai_answer
+            )
+
+        except Exception as ai_error:
+
+            print(
+                "Analyze AI error:",
+                repr(ai_error)
+            )
+
+            try:
+                await wait_message.delete()
+            except Exception:
+                pass
+
+            final_response = (
+                "🔎 REAL EBAY MƏHSUL ANALİZİ\n\n"
+                + result
+                + "\n\n"
+                + f"🎯 PRODUCT SCORE: {score}/100\n"
+                + f"📌 NƏTİCƏ: {decision}"
+            )
+
+        # =================================================
+        # TELEGRAM MESSAGE LIMIT
+        # =================================================
+
         max_length = 3900
 
         for i in range(
@@ -1057,7 +1213,7 @@ Məhsul haqqında verilən məlumat azdırsa, bunu dürüst şəkildə bildir.
     except Exception as error:
 
         print(
-            "Analyze error:",
+            "Analyze eBay error:",
             repr(error)
         )
 
@@ -1067,8 +1223,8 @@ Məhsul haqqında verilən məlumat azdırsa, bunu dürüst şəkildə bildir.
             pass
 
         await update.message.reply_text(
-            "❌ Analiz xətası:\n"
-            + str(error)[:1000]
+            "❌ eBay analiz xətası:\n\n"
+            + str(error)[:1200]
         )
 
 
