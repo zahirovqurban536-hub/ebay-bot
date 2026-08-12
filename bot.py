@@ -1199,7 +1199,10 @@ async def analyze_command(
 
         total_listings = 0
         prices = []
+        sellers = []
+        titles = [] 
 
+        
         if isinstance(data, dict):
 
             total_listings = int(
