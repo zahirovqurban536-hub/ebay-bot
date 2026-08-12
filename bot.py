@@ -718,19 +718,51 @@ async def ebay_command(
             []
         )
 
-        for item in items:
+                 for item in items:
 
-            price = item.get("price", {})
+            price = item.get("price")
 
             if isinstance(price, dict):
                 price = price.get("value")
 
             try:
+
                 if price is not None:
                     prices.append(
                         float(price)
                     )
-            except (ValueError, TypeError):
+
+            except (
+                ValueError,
+                TypeError
+            ):
+                pass
+
+            # TITLE
+            title = item.get("title", "")
+
+            if title:
+                titles.append(title)
+
+            # SELLER FEEDBACK
+            seller = item.get("seller", {})
+
+            if isinstance(seller, dict):
+                feedback = seller.get(
+                    "feedbackScore",
+                    0
+                )
+            else:
+                feedback = 0
+
+            try:
+                sellers.append(
+                    float(feedback)
+                )
+            except (
+                ValueError,
+                TypeError
+            ):
                 pass
 
         # =================================================
