@@ -1242,14 +1242,17 @@ async def analyze_command(
         # REAL SCORE
         # =================================================
 
-        score, decision = (
-    calculate_product_research_score(
+     (
+        score,
+        decision,
+        data_confidence,
+        breakdown
+    ) = calculate_product_research_score(
         total_listings,
         prices,
         sellers,
         titles
     )
-)
 
         # =================================================
         # AI ANALYSIS
