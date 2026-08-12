@@ -816,67 +816,123 @@ async def title_command(
 ):
 
     if not context.args:
-
         await update.message.reply_text(
-            "⚠️ Misal:\n"
-            "/title calming pet bed"
+            "⚠️ Məhsul adını yaz.\n\n"
+            "Misal:\n"
+            "/title mətbəx üçün elektrik süd köpürdücü"
         )
-
         return
 
-    raw_input = " ".join(
-        context.args
-    )
+    raw_input = " ".join(context.args)
 
-    if gemini_client:
+    if not gemini_client:
+        await update.message.reply_text(
+            "❌ GEMINI_API_KEY tapılmadı. Başlıq yaradıla bilmədi."
+        )
+        return
 
-        prompt = f"""
-Create 3 eBay product titles for:
+    prompt = f"""
+Create 3 eBay product titles for this product:
 
 {raw_input}
 
-Rules:
-- Maximum 80 characters each
-- Natural English
-- Do not use fake claims
-- Do not say USA Seller unless known
-- Do not say Top Rated unless verified
-- Focus on useful searchable keywords
+IMPORTANT RULES:
+
+- Write the titles in natural English.
+- Each title MUST be maximum 80 characters.
+- Use only information supported by the product name.
+- Do not invent product features.
+- Do not invent brand names.
+- Do not use "USA Seller".
+- Do not use "Top Rated".
+- Do not use "Best Seller".
+- Do not use "Best Gift".
+- Do not use "Fast Shipping".
+- Do not use "Free Shipping".
+- Do not use fake quality claims such as "Premium" or "Professional"
+  unless clearly supported by the product information.
+- Focus on useful eBay search keywords.
+- Avoid unnecessary symbols and emojis.
+- Return exactly 3 titles.
+- Put each title on a separate line.
+- Do not add explanations.
+
+Product:
+{raw_input}
 """
 
-        try:
+    try:
 
-            response = gemini_client.models.generate_content(
-                model="gemini-3.6-flash",
-                contents=prompt
-            )
+        response = gemini_client.models.generate_content(
+            model="gemini-3.6-flash",
+            contents=prompt
+        )
 
-            answer = response.text
+        answer = (
+            response.text.strip()
+            if response.text
+            else ""
+        )
 
+        if not answer:
             await update.message.reply_text(
-                "🏷 eBay SEO TITLE\n\n"
-                + answer
+                "❌ AI başlıq yarada bilmədi."
             )
-
             return
 
-        except Exception as error:
+        # AI cavabını sətirlərə böl
+        raw_titles = [
+            line.strip()
+            for line in answer.splitlines()
+            if line.strip()
+        ]
 
-            print(
-                "Title AI error:",
-                repr(error)
+        titles = []
+
+        for title in raw_titles:
+
+            # Nömrələməni təmizlə
+            title = title.lstrip("0123456789.-) ")
+
+            # 80 simvoldan artıqdırsa kəs
+            title = title[:80].strip()
+
+            if title:
+                titles.append(title)
+
+        # Maksimum 3 başlıq
+        titles = titles[:3]
+
+        if not titles:
+            await update.message.reply_text(
+                "❌ AI düzgün eBay başlığı yarada bilmədi."
+            )
+            return
+
+        response_text = (
+            "🏷 EBAY SEO TITLE\n\n"
+        )
+
+        for index, title in enumerate(titles, 1):
+            response_text += (
+                f"{index}. {title}\n"
+                f"📏 {len(title)}/80 simvol\n\n"
             )
 
-    fallback = (
-        f"{raw_input} - "
-        "Portable Adjustable Premium Design"
-    )
+        await update.message.reply_text(
+            response_text
+        )
 
-    await update.message.reply_text(
-        "🏷 eBay TITLE:\n\n"
-        + fallback[:80]
-    )
+    except Exception as error:
 
+        print(
+            "Title AI error:",
+            repr(error)
+        )
+
+        await update.message.reply_text(
+            "❌ AI başlıq yarada bilmədi."
+        )
 
 # =========================================================
 # ANALYZE
